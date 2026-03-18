@@ -22,52 +22,93 @@ class Player:
         self.bot_targets: dict[int, Position | None] = {}
         self.bot_paths: dict[int, list[Direction]] = {}
 
-    def calculate_bfs_path(self, ct: Controller, start: Position, target: Position) -> list[Direction] | None:
+    def calculate_astar_path(self, ct: Controller, start: Position, target: Position) -> list[Direction] | None:
         """
-        Zwraca listę kierunków (najkrótszą ścieżkę) do celu za pomocą BFS.
-        Zwraca None, jeśli cel jest całkowicie odcięty.
+        Zwraca listę kierunków za pomocą szybkiego, Optymistycznego A* (A-Star).
         """
         w, h = ct.get_map_width(), ct.get_map_height()
-        queue = deque([start])
+        
+        # Kolejka priorytetowa: trzyma krotki (priorytet, koszt_do_tej_pory, x, y, pozycja)
+        queue = []
+        heapq.heappush(queue, (0, 0, start.x, start.y, start))
+        
         came_from = {start: None}
-        iterations = 0 # bezpiecznik czasowy, żeby nie wpaść w za długą pętlę
-        vision_range = 20  # Limit BFS to vision range
+        cost_so_far = {start: 0}
+        iterations = 0
+        
+        
+        # Najpierw posortujmy kierunki tak, aby te najbliżej celu (minimalny dystans do targetu) były pierwsze - wyciągamy tylko pierwszy kierunek
+        DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
 
         while queue:
             iterations += 1
-            if iterations > 200:
-                # Szukaliśmy za długo, odpuszczamy ten cel.
+            if iterations > 1500:
                 return None
             
-            curr = queue.popleft()
+            # Wyciągamy kafelek, który ma NAJLEPSZY priorytet (najbliżej celu)
+            priority, current_cost, _, _, curr = heapq.heappop(queue)
 
             if curr == target:
                 break
-
-            for d in DIRECTIONS:
+            
+            #DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: max(abs((curr.add(d)).x - target.x), abs((curr.add(d)).y - target.y)))
+            
+            for d in DIRECTIONS_PREFERENCE:
                 next_pos = curr.add(d)
                 
-                # 1. Sprawdzamy, czy nie wychodzimy poza mapę
                 if not (0 <= next_pos.x < w and 0 <= next_pos.y < h):
                     continue
                 
-                # 2. Jeśli jeszcze nie odwiedziliśmy tego pola
-                if next_pos not in came_from:
-                    # 3. OPTYMISTYCZNY BFS - jeśli nie widzimy pola, zakładamy, że jest  przejezdne, żeby nie blokować bota mgłą wojny.
+                # Każdy krok kosztuje nas 1 punkt
+                new_cost = current_cost + 1
+                
+                # Jeśli jeszcze tu nie byliśmy ALBO znaleźliśmy tańszą/szybszą ścieżkę do tego pola
+                if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
+                    
+                    is_blocked = False
+
+                    # 1. OPTYMISTYCZNE SPRAWDZANIE MGŁY WOJNY
                     if ct.is_in_vision(next_pos):
-                        # Jeśli WIDZIMY to pole, sprawdzamy, czy jest tam droga lub czy możemy ją zbudować
-                        # Ściany i wrogie jednostki zwrócą False, więc bot je bezpiecznie ominie.
-                        if ct.is_tile_passable(next_pos) or ct.can_build_road(next_pos):
-                            came_from[next_pos] = (curr, d)
-                            queue.append(next_pos)
-                    else:
-                        # Jeśli NIE WIDZIMY pola (jest we mgle wojny), zakładamy w ciemno, że jest super przejezdne!
-                        came_from[next_pos] = (curr, d)
-                        queue.append(next_pos)
-                        
-        # Odtwarzanie ścieżki od tyłu
+                        # Jeśli pole jest w zasięgu wzroku, sprawdzamy, czy przejezdne
+                        our_passable = ct.is_tile_passable(next_pos)
+                        can_build = ct.can_build_road(next_pos)
+
+                        if not (our_passable or can_build):
+                            b_id = ct.get_tile_building_id(next_pos)
+                            if b_id is not None:
+                                # To budynek. Czy nasz?
+                                if ct.get_team(b_id) != ct.get_team():
+                                    b_type = ct.get_entity_type(b_id)
+                                    # Jeśli to wrogi taśmociąg/droga - MOŻNA iść (nie blokujemy)
+                                    if b_type not in [EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD]:
+                                        is_blocked = True # Np. wroga wieża, rampa, core - to blokuje
+                                else:
+                                    # Nasz budynek, który nie jest passable (np. Harvester) - blokuje
+                                    is_blocked = True
+                            else:
+                                # Brak budynku, ale can_build_road jest False? 
+                                # To musi być ściana lub ruda!
+                                is_blocked = True
+
+                    if is_blocked:
+                        continue
+
+                    # 2. ZAPISUJEMY KOSZT
+                    cost_so_far[next_pos] = new_cost
+                    
+                    # 3. MAGIA A*: Obliczamy "Heurystykę" (Odległość Czebyszewa, bo bot chodzi na ukos)
+                    heuristic = max(abs(next_pos.x - target.x), abs(next_pos.y - target.y))
+                    
+                    # Priorytet to suma tego, ile już przeszliśmy i ile (szacunkowo) nam zostało
+                    priority = new_cost + heuristic
+                    
+                    # Wrzucamy do kolejki
+                    heapq.heappush(queue, (priority, new_cost, next_pos.x, next_pos.y, next_pos))
+                    came_from[next_pos] = (curr, d)
+
+        # Odtwarzanie ścieżki
         if target not in came_from:
-            return None # Droga nie istnieje, bo nie dotarliśmy do celu
+            return None 
 
         path = []
         curr = target
@@ -120,9 +161,9 @@ class Player:
             
             # Mamy cel, ale nie mamy ścieżki
             if  self.bot_targets[my_id] and not self.bot_paths[my_id]: 
-                self.bot_paths[my_id] = self.calculate_bfs_path(ct, my_pos, self.bot_targets[my_id])
+                self.bot_paths[my_id] = self.calculate_astar_path(ct, my_pos, self.bot_targets[my_id])
                 
-                # Jeśli BFS nie znalazł ścieżki, resetujemy cel na następną turę
+                # Jeśli A* nie znalazł ścieżki, resetujemy cel na następną turę
                 if not self.bot_paths[my_id]:
                     self.bot_targets[my_id] = None
                     return  # Kończymy turę dla tego bota
@@ -135,32 +176,52 @@ class Player:
                 except Exception:
                     pass  # Target is outside vision range, skip visualization
             
+
             # 2. FAZA WYKONANIA: Jeśli mamy zapisaną ścieżkę, próbujemy iść
             if self.bot_paths[my_id]:
                 # ZAGLĄDAMY jaki jest następny krok, ale go jeszcze NIE USUWAMY z listy
                 next_dir = self.bot_paths[my_id][0]
                 next_pos = my_pos.add(next_dir)
 
-                # PRZYPADEK A: Możemy od razu wejść (jest Droga, Taśmociąg lub Rdzeń)
-                if ct.is_tile_passable(next_pos):
-                    if ct.can_move(next_dir):
-                        ct.move(next_dir)
-                        self.bot_paths[my_id].pop(0)  # Zrobiliśmy krok, usuwamy go ze ścieżki
+                # --- SPRAWDZANIE CO JEST PRZED NAMI ---
+                # Czy to pole jest oficjalnie przejezdne (nasze drogi/core)?
+                is_passable = ct.is_tile_passable(next_pos)
                 
-                # PRZYPADEK B: Aby przejść, trzeba wybudować Drogę
-                elif ct.can_build_road(next_pos):
-                    if ct.get_action_cooldown() == 0:
-                        ct.build_road(next_pos)
+                # Czy to jest teren wroga, po którym można chodzić (conveyor/road)?
+                can_walk_on_enemy = False
+                b_id = ct.get_tile_building_id(next_pos)
 
-                    # Zbudowaliśmy drogę, jeśli możemy, to wchodzimy
+                if b_id is not None and ct.get_team(b_id) != ct.get_team():
+                    b_type = ct.get_entity_type(b_id)
+                    if b_type in [EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD]:
+                        can_walk_on_enemy = True
+
+                # PRZYPADEK A: Możemy od razu wejść (jest Droga, Taśmociąg lub Rdzeń)
+                if is_passable or can_walk_on_enemy:
                     if ct.can_move(next_dir):
                         ct.move(next_dir)
-                        self.bot_paths[my_id].pop(0)  # Zbudowano i ruszono się, usuwamy go ze ścieżki
-                        # UWAGA: Jeśli nie mamy move_cooldown, bot zbuduje drogę, ale krok 
-                        # zostaje na liście path[0]. W następnej turze bot wejdzie w PRZYPADEK A!
+                        self.bot_paths[my_id].pop(0)  # Sukces!
                 
-                # PRZYPADEK C: Ścieżka zablokowana
+                # PRZYPADEK B: Pusty teren, MOŻEMY wybudować Drogę (mamy Tytan i 0 cooldownu)
+                elif ct.can_build_road(next_pos):
+                    ct.build_road(next_pos)
+                    
+                    # Od razu wchodzimy, jeśli mamy też odnowiony move_cooldown
+                    if ct.can_move(next_dir):
+                        ct.move(next_dir)
+                        self.bot_paths[my_id].pop(0)
+                
+                # PRZYPADEK C: Ścieżka zablokowana. Ale dlaczego?
                 else:
-                    # Resetujemy pamięć - zarówno cel, jak i ścieżkę.
-                    self.bot_paths[my_id] = []
-                    self.bot_targets[my_id] = None
+                    # Sprawdzamy, co nas blokuje. 
+                    env = ct.get_tile_env(next_pos)
+                    
+                    # Jeśli przed nami wyrosła wielka skała, ruda, albo obcy budynek (np. wieżyczka wroga):
+                    if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or b_id is not None:
+                        # TRWAŁA BLOKADA: Resetujemy pamięć, żeby A* policzył nową trasę!
+                        self.bot_paths[my_id] = []
+                        #self.bot_targets[my_id] = None na razie zostawiamy ten sam cel, bo może się okazać, że to tylko chwilowa przeszkoda (np. inny bot przechodził przed nami i zaraz pójdzie dalej)
+                    else:
+                        # TYMCZASOWA BLOKADA: (Brak tytanu, cooldown, albo przed nami stoi nasz kolega-bot).
+                        # Bot po prostu cierpliwie stoi i CZEKA (nie robimy nic w tej turze).
+                        pass
