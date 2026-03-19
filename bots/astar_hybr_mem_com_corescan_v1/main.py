@@ -154,7 +154,7 @@ class Player:
                     
                     # Wrzucamy do kolejki
                     heapq.heappush(queue, (priority, new_cost, next_pos.x, next_pos.y, next_pos))
-                    came_from[next_pos] = (curr, d)
+                    came_from[next_pos] = (curr, d) # type: ignore
 
         # Odtwarzanie ścieżki
         if target not in came_from:
@@ -411,7 +411,7 @@ class Player:
                     # Sprawdzamy, z czym mamy do czynienia
                     env = ct.get_tile_env(greedy_pos)
                     b_id = ct.get_tile_building_id(greedy_pos)
-                    can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct)
+                    can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
 
                     # Sprawdzenie pamięci
                     memory_env = self.bot_memory[my_id].get(greedy_pos)
@@ -427,7 +427,7 @@ class Player:
                         self.bot_paths[my_id] = [greedy_dir]
                     else:
                         # KROK 2: Uderzenie w przeszkodę -> Tryb Awaryjny (A*)
-                        self.bot_paths[my_id] = self.calculate_astar_path(ct, my_pos, target_pos, map_width, map_height, my_id, my_team)
+                        self.bot_paths[my_id] = self.calculate_astar_path(ct, my_pos, target_pos, map_width, map_height, my_id, my_team) # type: ignore
                         
                         if not self.bot_paths[my_id]:
                             self.bot_targets[my_id] = None
@@ -436,8 +436,8 @@ class Player:
                 # Wizualizacja celu
                 if self.bot_targets[my_id]:
                     try:
-                        ct.draw_indicator_dot(self.bot_targets[my_id], 255, 255, 0)
-                        ct.draw_indicator_line(my_pos, self.bot_targets[my_id], 0, 200, 255)
+                        ct.draw_indicator_dot(self.bot_targets[my_id], 255, 255, 0) # type: ignore
+                        ct.draw_indicator_line(my_pos, self.bot_targets[my_id], 0, 200, 255) # type: ignore
                     except Exception:
                         pass
 
@@ -448,7 +448,7 @@ class Player:
 
                     is_passable = ct.is_tile_passable(next_pos)
                     b_id = ct.get_tile_building_id(next_pos)
-                    can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct)
+                    can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
 
                     # PRZYPADEK A: Możemy od razu wejść
                     if is_passable or can_walk_on_enemy:
