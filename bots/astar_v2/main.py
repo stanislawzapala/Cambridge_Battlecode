@@ -113,13 +113,6 @@ class Player:
                     heapq.heappush(queue, (priority, new_cost, next_pos.x, next_pos.y, next_pos))
                     came_from[next_pos] = (curr, d)
 
-                    # Priorytet to suma tego, ile już przeszliśmy i ile (szacunkowo) nam zostało
-                    priority = new_cost + heuristic
-                    
-                    # Wrzucamy do kolejki
-                    heapq.heappush(queue, (priority, new_cost, next_pos.x, next_pos.y, next_pos))
-                    came_from[next_pos] = (curr, d)
-
         # Odtwarzanie ścieżki
         if target not in came_from:
             return None 
@@ -160,88 +153,74 @@ class Player:
         # 2. LOGIKA PROBY (BUILDER_BOT) - na razie tylko poruszanie się do losowego celu za pomocą BFS
         # ==========================================
         elif etype == EntityType.BUILDER_BOT:
-            # INICJALIZACJA PAMIĘCI: Jeśli to nowy bot, dajemy mu własną pustą teczkę
             if my_id not in self.bot_targets:
                 self.bot_targets[my_id] = None
                 self.bot_paths[my_id] = []
             
-            
-            # 1. FAZA PLANOWANIA:
-            # Czy stoimy na celu? Jeśli tak, resetujemy cel i ścieżkę, żeby wybrać nowy cel.
-            if self.bot_targets[my_id] and my_pos == self.bot_targets[my_id]:
-                self.bot_targets[my_id] = None
-                self.bot_paths[my_id] = []
-            
-            # Nie mamy celu
-            if not self.bot_targets[my_id]:
-                self.bot_targets[my_id] = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
-            
-            # Mamy cel, ale nie mamy ścieżki
-            if  self.bot_targets[my_id] and not self.bot_paths[my_id]: 
-                self.bot_paths[my_id] = self.calculate_astar_path(ct, my_pos, self.bot_targets[my_id], map_width, map_height) # type: ignore
+            # --- PĘTLA DRUGIEJ SZANSY ---
+            # Pozwala botowi przeliczyć trasę i ruszyć się w tej samej turze, jeśli napotka niespodziankę
+            for _ in range(2): 
                 
-                # Jeśli A* nie znalazł ścieżki, resetujemy cel na następną turę
-                if not self.bot_paths[my_id]:
+                # 1. FAZA PLANOWANIA:
+                if self.bot_targets[my_id] and my_pos == self.bot_targets[my_id]:
                     self.bot_targets[my_id] = None
-                    return  # Kończymy turę dla tego bota
-            
-            # Rysujemy linię do celu - debugowanie
-            if self.bot_targets[my_id]:
-                try:
-                    ct.draw_indicator_dot(self.bot_targets[my_id], 255, 255, 0) # type: ignore
-                    ct.draw_indicator_line(my_pos, self.bot_targets[my_id], 0, 200, 255) # type: ignore
-                except Exception:
-                    pass  # Target is outside vision range, skip visualization
-            
-
-            # 2. FAZA WYKONANIA: Jeśli mamy zapisaną ścieżkę, próbujemy iść
-            if self.bot_paths[my_id]:
-                # ZAGLĄDAMY jaki jest następny krok, ale go jeszcze NIE USUWAMY z listy
-                next_dir = self.bot_paths[my_id][0]
-                next_pos = my_pos.add(next_dir)
-
-                # --- SPRAWDZANIE CO JEST PRZED NAMI ---
-                # Czy to pole jest oficjalnie przejezdne (nasze drogi/core)?
-                is_passable = ct.is_tile_passable(next_pos)
+                    self.bot_paths[my_id] = []
                 
-                # Czy to jest teren wroga, po którym można chodzić (conveyor/road)?
-                can_walk_on_enemy = False
-                b_id = ct.get_tile_building_id(next_pos)
-
-                if b_id is not None and ct.get_team(b_id) != ct.get_team():
-                    b_type = ct.get_entity_type(b_id)
-                    if b_type in [EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD]:
-                        can_walk_on_enemy = True
-
-                # PRZYPADEK A: Możemy od razu wejść (jest Droga, Taśmociąg lub Rdzeń)
-                if is_passable or can_walk_on_enemy:
-                    if ct.can_move(next_dir):
-                        ct.move(next_dir)
-                        self.bot_paths[my_id].pop(0)  # Sukces!
+                if not self.bot_targets[my_id]:
+                    self.bot_targets[my_id] = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
                 
-                # PRZYPADEK B: Pusty teren, MOŻEMY wybudować Drogę (mamy Tytan i 0 cooldownu)
-                elif ct.can_build_road(next_pos):
-                    if ct.get_action_cooldown() == 0:
-                        ct.build_road(next_pos)
-                    
-                    # Od razu wchodzimy, jeśli mamy też odnowiony move_cooldown
-                    if ct.can_move(next_dir):
-                        ct.move(next_dir)
-                        self.bot_paths[my_id].pop(0)
+                if self.bot_targets[my_id] and not self.bot_paths[my_id]: 
+                    self.bot_paths[my_id] = self.calculate_astar_path(ct, my_pos, self.bot_targets[my_id], map_width, map_height)
+                    if not self.bot_paths[my_id]:
+                        self.bot_targets[my_id] = None
+                        break  # Brak drogi do celu, kończymy kombinowanie w tej turze
                 
-                # PRZYPADEK C: Ścieżka zablokowana. Ale dlaczego?
-                else:
-                    # Sprawdzamy, co nas blokuje. 
-                    env = ct.get_tile_env(next_pos)
-                    
-                    # Jeśli przed nami wyrosła wielka skała, ruda, albo obcy budynek (np. wieżyczka wroga):
-                    if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or b_id is not None:
-                        # TRWAŁA BLOKADA: Resetujemy pamięć, żeby A* policzył nową trasę!
-                        self.bot_paths[my_id] = []
-                        #self.bot_targets[my_id] = None na razie zostawiamy ten sam cel, bo może się okazać, że to tylko chwilowa przeszkoda (np. inny bot przechodził przed nami i zaraz pójdzie dalej)
-                    else:
-                        # TYMCZASOWA BLOKADA: (Brak tytanu, cooldown, albo przed nami stoi nasz kolega-bot).
-                        # Bot po prostu cierpliwie stoi i CZEKA (nie robimy nic w tej turze).
+                if self.bot_targets[my_id]:
+                    try:
+                        ct.draw_indicator_dot(self.bot_targets[my_id], 255, 255, 0)
+                        ct.draw_indicator_line(my_pos, self.bot_targets[my_id], 0, 200, 255)
+                    except Exception:
                         pass
-        
-        
+
+                # 2. FAZA WYKONANIA:
+                if self.bot_paths[my_id]:
+                    next_dir = self.bot_paths[my_id][0]
+                    next_pos = my_pos.add(next_dir)
+
+                    is_passable = ct.is_tile_passable(next_pos)
+                    can_walk_on_enemy = False
+                    b_id = ct.get_tile_building_id(next_pos)
+
+                    if b_id is not None and ct.get_team(b_id) != ct.get_team():
+                        b_type = ct.get_entity_type(b_id)
+                        if b_type in [EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD]:
+                            can_walk_on_enemy = True
+
+                    # PRZYPADEK A: Możemy od razu wejść
+                    if is_passable or can_walk_on_enemy:
+                        if ct.can_move(next_dir):
+                            ct.move(next_dir)
+                            self.bot_paths[my_id].pop(0) 
+                        break # SUKCES (lub brak cooldownu), w każdym razie kończymy pracę w tej turze
+                    
+                    # PRZYPADEK B: Wybudowanie Drogi
+                    elif ct.can_build_road(next_pos):
+                        if ct.get_action_cooldown() == 0:
+                            ct.build_road(next_pos)
+                            if ct.can_move(next_dir):
+                                ct.move(next_dir)
+                                self.bot_paths[my_id].pop(0)
+                        break # Zbudowaliśmy (lub brak cooldownu), kończymy turę
+                    
+                    # PRZYPADEK C: Ścieżka zablokowana niespodzianką
+                    else:
+                        env = ct.get_tile_env(next_pos)
+                        if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or b_id is not None:
+                            # TRWAŁA BLOKADA!
+                            self.bot_paths[my_id] = []
+                            # Zamiast wychodzić (break), pozwalamy pętli `for` obrócić się po raz drugi!
+                            # Dzięki temu Faza 1 natychmiast przeliczy nową trasę, a Faza 2 ją wykona.
+                            continue 
+                        else:
+                            # Tymczasowa blokada (inny bot)
+                            break # Stoję i czekam
