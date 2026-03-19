@@ -1,6 +1,6 @@
 # Packages
 # 1. Official
-from cambc import Controller, Direction, EntityType, Environment, Position
+from cambc import Controller, Direction, EntityType, Environment, Position, Team
 # 2. For random movement (for testing purposes)
 import random
 # 3. For priority queue (if we later want to implement A*)
@@ -19,7 +19,10 @@ class Player:
         # Kluczem w słowniku będzie ID bota (int)
         self.bot_targets: dict[int, Position | None] = {}
         self.bot_paths: dict[int, list[Direction]] = {}
+        # Pamięć Topograficzna (Niezmienna)
         self.bot_memory: dict[int, dict[Position, Environment]] = {}
+        # Pamięć Taktyczna (Dynamiczna) - zapamiętujemy Typ i Drużynę
+        self.bot_buildings: dict[int, dict[Position, tuple[EntityType, Team]]] = {}
 
 
     def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int) -> list[Direction] | None:
@@ -171,8 +174,10 @@ class Player:
                 # Cel i trasa ruchu proby
                 self.bot_targets[my_id] = None
                 self.bot_paths[my_id] = []
-                # Mapa topograficzna widzianego terenu
+                # Mapa topograficzna (Environment)
                 self.bot_memory[my_id] = {}
+                # Mapa budynkow (Typ Budynku + Drużyna)
+                self.bot_buildings[my_id] = {}
             
             # --- SKANOWANIE I AKTUALIZACJA MAPY ---
             for pos in ct.get_nearby_tiles():
@@ -182,6 +187,17 @@ class Player:
                     # Zapisujemy TWARDE elementy środowiska, żeby oszczędzić trochę miejsca
                     if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
                         self.bot_memory[my_id][pos] = env
+                    
+                b_id = ct.get_tile_building_id(pos)
+                if b_id is not None:
+                    # Ktoś tu coś zbudował (lub budynek nadal stoi) -> Nadpisujemy
+                    b_type = ct.get_entity_type(b_id)
+                    b_team = ct.get_team(b_id)
+                    self.bot_buildings[my_id][pos] = (b_type, b_team)
+                else:
+                    # Pole jest PUSTE. Usuwamy z pamięci budynków, jeśli wcześniej był tam jakiś budynek
+                    if pos in self.bot_buildings[my_id]:
+                        del self.bot_buildings[my_id][pos]
 
             # --- PĘTLA DRUGIEJ SZANSY ---
             for _ in range(2): 
