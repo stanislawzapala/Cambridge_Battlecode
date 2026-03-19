@@ -194,8 +194,6 @@ class Player:
         """Sprawdza, czy można chodzić po budynku wroga (droga/taśmociąg/pancerna taśma)."""
         if b_id is None:
             return False
-        if ct.get_team(b_id) == my_team:  # Nasz budynek - nie liczy się
-            return False
         b_type = ct.get_entity_type(b_id)
         return b_type in [EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD]
     
@@ -472,8 +470,13 @@ class Player:
             current_state = self.bot_states[my_id]
             
             if current_state == BotState.SCOUT:
-                # Wieczny zwiad - bot ignoruje rudy i skupia się na bieganiu i feromonach
-                if not self.bot_targets[my_id] or my_pos == self.bot_targets[my_id]:
+                target_pos = self.bot_targets[my_id]
+                
+                # ZABEZPIECZENIE: Sprawdzamy z pamięci, czy cel nie wypadł w skale
+                target_is_wall = target_pos and self.bot_memory[my_id].get(target_pos) in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]
+                
+                # Wieczny zwiad - resetujemy cel, jeśli doszliśmy, nie mamy go, ALBO jest on w ścianie!
+                if not target_pos or my_pos == target_pos or target_is_wall:
                     self.bot_targets[my_id] = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
                     self.bot_paths[my_id] = []
 
