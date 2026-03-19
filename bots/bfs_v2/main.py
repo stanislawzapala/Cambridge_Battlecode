@@ -22,12 +22,11 @@ class Player:
         self.bot_targets: dict[int, Position | None] = {}
         self.bot_paths: dict[int, list[Direction]] = {}
 
-    def calculate_bfs_path(self, ct: Controller, start: Position, target: Position) -> list[Direction] | None:
+    def calculate_bfs_path(self, ct: Controller, start: Position, target: Position, w: int, h: int) -> list[Direction] | None:
         """
         Zwraca listę kierunków (najkrótszą ścieżkę) do celu za pomocą BFS.
         Zwraca None, jeśli cel jest całkowicie odcięty.
         """
-        w, h = ct.get_map_width(), ct.get_map_height()
         queue = deque([start])
         came_from = {start: None}
         iterations = 0 # bezpiecznik czasowy, żeby nie wpaść w za długą pętlę
@@ -80,6 +79,10 @@ class Player:
         return path
 
     def run(self, ct: Controller) -> None:
+        # Cache map dimensions to avoid repeated API calls
+        map_width = ct.get_map_width()
+        map_height = ct.get_map_height()
+        
         etype = ct.get_entity_type()
         my_pos = ct.get_position()
         my_id = ct.get_id()
@@ -116,11 +119,11 @@ class Player:
             
             # Nie mamy celu
             if not self.bot_targets[my_id]:
-                self.bot_targets[my_id] = Position(random.randint(0, ct.get_map_width() - 1), random.randint(0, ct.get_map_height() - 1))
+                self.bot_targets[my_id] = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
             
             # Mamy cel, ale nie mamy ścieżki
             if  self.bot_targets[my_id] and not self.bot_paths[my_id]: 
-                self.bot_paths[my_id] = self.calculate_bfs_path(ct, my_pos, self.bot_targets[my_id])
+                self.bot_paths[my_id] = self.calculate_bfs_path(ct, my_pos, self.bot_targets[my_id], map_width, map_height)
                 
                 # Jeśli BFS nie znalazł ścieżki, resetujemy cel na następną turę
                 if not self.bot_paths[my_id]:

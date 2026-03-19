@@ -22,11 +22,11 @@ class Player:
         self.bot_targets: dict[int, Position | None] = {}
         self.bot_paths: dict[int, list[Direction]] = {}
 
-    def calculate_astar_path(self, ct: Controller, start: Position, target: Position) -> list[Direction] | None:
+
+    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int) -> list[Direction] | None:
         """
         Zwraca listę kierunków za pomocą optymistycznego A* (A-Star).
         """
-        w, h = ct.get_map_width(), ct.get_map_height()
         
         # Kolejka priorytetowa: trzyma krotki (priorytet, koszt_do_tej_pory, x, y, pozycja)
         queue = []
@@ -38,7 +38,7 @@ class Player:
         
         
         # Najpierw posortujmy kierunki tak, aby te najbliżej celu (minimalny dystans do targetu) były pierwsze - wyciągamy tylko pierwszy kierunek
-        # DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
+        DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
 
         while queue:
             iterations += 1
@@ -51,7 +51,6 @@ class Player:
             if curr == target:
                 break
             
-            DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: max(abs((curr.add(d)).x - target.x), abs((curr.add(d)).y - target.y)))
             
             for d in DIRECTIONS_PREFERENCE:
                 next_pos = curr.add(d)
@@ -94,9 +93,26 @@ class Player:
                     # 2. ZAPISUJEMY KOSZT
                     cost_so_far[next_pos] = new_cost
                     
-                    # 3. MAGIA A*: Obliczamy "Heurystykę" (Odległość Czebyszewa, bo bot chodzi na ukos)
+                    # 3. A*: Podstawowa heurystyka (Czebyszew)
                     heuristic = max(abs(next_pos.x - target.x), abs(next_pos.y - target.y))
                     
+                    # --- TIE-BREAKER (Lekarstwo na zygzaki) ---
+                    # Obliczamy wektory, żeby sprawdzić, czy zjeżdżamy z idealnej prostej
+                    dx1 = next_pos.x - target.x
+                    dy1 = next_pos.y - target.y
+                    dx2 = start.x - target.x
+                    dy2 = start.y - target.y
+                    
+                    # Iloczyn wektorowy
+                    cross_product = abs(dx1 * dy2 - dx2 * dy1)
+                    
+                    # Priorytet to: koszt + heurystyka + mała kara za zjazd z prostej linii
+                    priority = new_cost + heuristic + (cross_product * 0.0001)
+                    
+                    # Wrzucamy do kolejki
+                    heapq.heappush(queue, (priority, new_cost, next_pos.x, next_pos.y, next_pos))
+                    came_from[next_pos] = (curr, d)
+
                     # Priorytet to suma tego, ile już przeszliśmy i ile (szacunkowo) nam zostało
                     priority = new_cost + heuristic
                     
@@ -119,6 +135,10 @@ class Player:
         return path
 
     def run(self, ct: Controller) -> None:
+        # Cache map dimensions to avoid repeated API calls
+        map_width = ct.get_map_width()
+        map_height = ct.get_map_height()
+        
         etype = ct.get_entity_type()
         my_pos = ct.get_position()
         my_id = ct.get_id()
@@ -127,7 +147,6 @@ class Player:
         # 1. LOGIKA BAZY (CORE) - na razie tylko produkcja probek
         # ==========================================
         if etype == EntityType.CORE:
-            print(f"Baza żyje, pozycja: {ct.get_position()}, spawned: {self.spawned_bots_count}")
             # Ograniczamy produkcję do 5 probek
             if self.spawned_bots_count < 5 and ct.get_action_cooldown() == 0:
                 spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
@@ -155,11 +174,11 @@ class Player:
             
             # Nie mamy celu
             if not self.bot_targets[my_id]:
-                self.bot_targets[my_id] = Position(random.randint(0, ct.get_map_width() - 1), random.randint(0, ct.get_map_height() - 1))
+                self.bot_targets[my_id] = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
             
             # Mamy cel, ale nie mamy ścieżki
             if  self.bot_targets[my_id] and not self.bot_paths[my_id]: 
-                self.bot_paths[my_id] = self.calculate_astar_path(ct, my_pos, self.bot_targets[my_id])
+                self.bot_paths[my_id] = self.calculate_astar_path(ct, my_pos, self.bot_targets[my_id], map_width, map_height) # type: ignore
                 
                 # Jeśli A* nie znalazł ścieżki, resetujemy cel na następną turę
                 if not self.bot_paths[my_id]:
@@ -169,8 +188,8 @@ class Player:
             # Rysujemy linię do celu - debugowanie
             if self.bot_targets[my_id]:
                 try:
-                    ct.draw_indicator_dot(self.bot_targets[my_id], 255, 255, 0)
-                    ct.draw_indicator_line(my_pos, self.bot_targets[my_id], 0, 200, 255)
+                    ct.draw_indicator_dot(self.bot_targets[my_id], 255, 255, 0) # type: ignore
+                    ct.draw_indicator_line(my_pos, self.bot_targets[my_id], 0, 200, 255) # type: ignore
                 except Exception:
                     pass  # Target is outside vision range, skip visualization
             
@@ -224,3 +243,5 @@ class Player:
                         # TYMCZASOWA BLOKADA: (Brak tytanu, cooldown, albo przed nami stoi nasz kolega-bot).
                         # Bot po prostu cierpliwie stoi i CZEKA (nie robimy nic w tej turze).
                         pass
+        
+        
