@@ -41,6 +41,8 @@ class Player:
     def __init__(self):
         # CORE
         self.spawned_bots_count = 0
+        self.starting_protocol = False
+        self.core_facts_to_report = []
         
 
         # PROBES (Builder Bot)
@@ -244,7 +246,44 @@ class Player:
         # 1. LOGIKA BAZY (CORE) - na razie tylko produkcja probek
         # ==========================================
         if etype == EntityType.CORE:
-            # Ograniczamy produkcję do 5 probek
+            # PROTOKÓŁ ROZRUCHOWY 
+            # Jednorazowo
+            if not self.starting_protocol:
+                found_walls = []
+                found_ores = []
+
+                for pos in ct.get_nearby_tiles():
+                    env = ct.get_tile_env(pos)
+                    # Rozdzielamy ściany od priorytetowych złóż
+                    if env == Environment.WALL:
+                        found_walls.append((pos, env, None, False))
+                    elif env in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                        found_ores.append((pos, env, None, False))
+                
+                # Łączymy listy. Rudy są na końcu, więc .pop() zdejmie je jako pierwsze!
+                self.core_facts_to_report = found_walls + found_ores
+                self.starting_protocol = True
+            
+            # B) DYREKTYWA SYNAPSA ZER (cokolwiek to jest) - Zostawiamy ślady o najważniejszych odkryciach z protokołu rozruchowego (ściany i rudy)
+            # Dopóki nie wyczerpiemy listy, bot będzie zostawiał markery z informacjami o tych kluczowych pozycjach
+            if self.core_facts_to_report:
+                # Patrzymy na ostatni element w kolejce
+                rep_pos, rep_env, rep_btype, rep_is_enemy = self.core_facts_to_report[-1]
+                
+                place_pos = None
+                # Rdzeń może działać w promieniu = 8
+                for adj_pos in ct.get_nearby_tiles(8):
+                    if ct.can_place_marker(adj_pos):
+                        place_pos = adj_pos
+                        break
+                
+                if place_pos:
+                    marker_payload = self.pack_map_marker(current_round, rep_pos, rep_env, rep_btype, rep_is_enemy)
+                    ct.place_marker(place_pos, marker_payload)
+                    # Ślad zostawiony! Usuwamy fakt z kolejki.
+                    self.core_facts_to_report.pop()
+            
+            # PRODUKCJA PROBEK
             if self.spawned_bots_count < 5 and ct.get_action_cooldown() == 0:
                 spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                 if ct.can_spawn(spawn_pos):
@@ -252,6 +291,7 @@ class Player:
                     self.spawned_bots_count += 1 
             return
         
+
 
         # ==========================================
         # 2. LOGIKA PROBY (BUILDER_BOT) - Hybryda (Greedy + A*)
