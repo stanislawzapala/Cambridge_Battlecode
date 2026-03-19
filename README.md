@@ -10,3 +10,9 @@ Druga rzecz - pakiet leci na wersji pythona 3.12 / 3.13. Na nowszych wyskakuje b
 
 ## Pomysły
 1. markery - do zapisywania lokalnie pewnej drogi do bazy? taki roadmap, albo stawianie ich co jakiś czas
+
+
+## Podpatrzone taktyki:
+1. Defensywa - postawienie splitterów poza rogami i środkami boków, a w pozostałych miejscach wieżyczki - (gościu stawiał sentinele, ale może lepiej gunnery?)
+2. cannon rush
+3. bunkier na mapie po stronie przeciwnika
