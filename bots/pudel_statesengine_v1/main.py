@@ -235,6 +235,41 @@ class Player:
         return data
 
 
+    def find_nearest_vip_target(self, my_pos: Position, vip_facts: dict, 
+                                target_envs: list[Environment] = None, 
+                                target_btypes: list[EntityType] = None, 
+                                ownership: str = 'empty') -> Position | None:
+        """
+        Uniwersalna wyszukiwarka w bazie VIP.
+        ownership: 'empty' (brak budynku), 'mine' (nasz budynek), 'enemy' (wrogi budynek), 'any' (obojętnie)
+        """
+        nearest_pos = None
+        min_distance = float('inf')
+        
+        for pos, (env, b_type, is_enemy) in vip_facts.items():
+            # 1. FILTR TERENU (jeśli podano listę, sprawdzamy czy pasuje)
+            if target_envs is not None and env not in target_envs:
+                continue
+                
+            # 2. FILTR BUDYNKU (jeśli podano listę, sprawdzamy czy pasuje)
+            if target_btypes is not None and b_type not in target_btypes:
+                continue
+                
+            # 3. FILTR WŁASNOŚCI
+            if ownership == 'empty' and b_type is not None:
+                continue
+            if ownership == 'mine' and (b_type is None or is_enemy):
+                continue
+            if ownership == 'enemy' and (b_type is None or not is_enemy):
+                continue
+                
+            # Jeśli przeszliśmy wszystkie filtry, sprawdzamy odległość
+            dist = my_pos.distance_squared(pos)
+            if dist < min_distance:
+                min_distance = dist
+                nearest_pos = pos
+                
+        return nearest_pos
 
 
 
@@ -407,6 +442,40 @@ class Player:
 
             for _ in range(2): 
                 
+                
+                # --- PRZEJŚCIA MIĘDZY STANAMI (Transitions) ---
+                
+                if current_state == BotState.EXPLORE:
+                    # TODO: Napisać funkcję, która szuka wolnego złoża w vip_facts.
+                    # Jeśli znajdzie:
+                    # 1. self.bot_states[my_id] = BotState.BUILD_MINE
+                    # 2. self.bot_targets[my_id] = znalezione_zloze
+                    # 3. self.bot_paths[my_id] = []
+                    
+
+
+
+                    # Jeśli nie znajdzie wolnego złoża (lub zgubił stary losowy cel):
+
+                    if not self.bot_targets[my_id] or my_pos == self.bot_targets[my_id]:
+                        self.bot_targets[my_id] = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
+                        self.bot_paths[my_id] = []
+
+                elif current_state == BotState.BUILD_MINE:
+                    # TODO: Sprawdź, czy cel nadal jest wolny (może inny bot już tam zbudował kopalnię?).
+                    # Jeśli ktoś nas ubiegł -> wracamy do EXPLORE.
+                    # Jeśli doszliśmy na miejsce -> budujemy HARVESTER i zmieniamy stan na BUILD_BELT.
+                    pass
+
+                elif current_state == BotState.BUILD_BELT:
+                    # TODO: Odpal A* w stronę Bazy/Najbliższego Taśmociągu.
+                    # Buduj drogę za sobą.
+                    pass
+                
+
+
+                target_pos = self.bot_targets[my_id]
+                #####################################################
                 # 1. FAZA PLANOWANIA (Wybór celu)
                 if self.bot_targets[my_id] and my_pos == self.bot_targets[my_id]:
                     self.bot_targets[my_id] = None
