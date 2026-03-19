@@ -24,7 +24,7 @@ class Player:
 
     def calculate_astar_path(self, ct: Controller, start: Position, target: Position) -> list[Direction] | None:
         """
-        Zwraca listę kierunków za pomocą szybkiego, Optymistycznego A* (A-Star).
+        Zwraca listę kierunków za pomocą optymistycznego A* (A-Star).
         """
         w, h = ct.get_map_width(), ct.get_map_height()
         
@@ -38,7 +38,7 @@ class Player:
         
         
         # Najpierw posortujmy kierunki tak, aby te najbliżej celu (minimalny dystans do targetu) były pierwsze - wyciągamy tylko pierwszy kierunek
-        DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
+        # DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
 
         while queue:
             iterations += 1
@@ -51,7 +51,7 @@ class Player:
             if curr == target:
                 break
             
-            #DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: max(abs((curr.add(d)).x - target.x), abs((curr.add(d)).y - target.y)))
+            DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: max(abs((curr.add(d)).x - target.x), abs((curr.add(d)).y - target.y)))
             
             for d in DIRECTIONS_PREFERENCE:
                 next_pos = curr.add(d)
@@ -69,25 +69,23 @@ class Player:
 
                     # 1. OPTYMISTYCZNE SPRAWDZANIE MGŁY WOJNY
                     if ct.is_in_vision(next_pos):
-                        # Jeśli pole jest w zasięgu wzroku, sprawdzamy, czy przejezdne
-                        our_passable = ct.is_tile_passable(next_pos)
-                        can_build = ct.can_build_road(next_pos)
-
-                        if not (our_passable or can_build):
-                            b_id = ct.get_tile_building_id(next_pos)
-                            if b_id is not None:
-                                # To budynek. Czy nasz?
-                                if ct.get_team(b_id) != ct.get_team():
-                                    b_type = ct.get_entity_type(b_id)
-                                    # Jeśli to wrogi taśmociąg/droga - MOŻNA iść (nie blokujemy)
-                                    if b_type not in [EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD]:
-                                        is_blocked = True # Np. wroga wieża, rampa, core - to blokuje
-                                else:
-                                    # Nasz budynek, który nie jest passable (np. Harvester) - blokuje
-                                    is_blocked = True
-                            else:
-                                # Brak budynku, ale can_build_road jest False? 
-                                # To musi być ściana lub ruda!
+                        env = ct.get_tile_env(next_pos)
+                        b_id = ct.get_tile_building_id(next_pos)
+                        
+                        # Twarde przeszkody (Ściany i Rudy)
+                        if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                            is_blocked = True
+                        
+                        # Budynki
+                        elif b_id is not None:
+                            b_type = ct.get_entity_type(b_id)
+                            passable_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR]
+                            
+                            # Jeśli to nie jest droga/taśmociąg i nie jest to nasz Rdzeń, to nas blokuje
+                            if b_type not in passable_types and b_type != EntityType.CORE:
+                                is_blocked = True
+                            # Wrogi rdzeń też blokuje
+                            elif b_type == EntityType.CORE and ct.get_team(b_id) != ct.get_team():
                                 is_blocked = True
 
                     if is_blocked:
@@ -204,7 +202,8 @@ class Player:
                 
                 # PRZYPADEK B: Pusty teren, MOŻEMY wybudować Drogę (mamy Tytan i 0 cooldownu)
                 elif ct.can_build_road(next_pos):
-                    ct.build_road(next_pos)
+                    if ct.get_action_cooldown() == 0:
+                        ct.build_road(next_pos)
                     
                     # Od razu wchodzimy, jeśli mamy też odnowiony move_cooldown
                     if ct.can_move(next_dir):
