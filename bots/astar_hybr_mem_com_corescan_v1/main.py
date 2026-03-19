@@ -334,7 +334,6 @@ class Player:
                     # 1. WSZYSTKIE budynki wroga
                     if b_team == enemy_team:
                         self.vip_facts[my_id][pos] = (Environment.EMPTY, b_type, True)
-                        best_tile_to_report = pos
                     
                     # 2. NASZE strategiczne budynki (Kopalnie, Wieże, Huty)
                     elif b_team == my_team:
@@ -387,6 +386,8 @@ class Player:
             # ==========================================
             # 2. RUCH - Hybryda Zachłanny Insekt + A* z podwójną pętlą (2 próby ruchu)
             # ==========================================
+            future_pos = my_pos # Do zapamiętania docelowej pozycji po ruchu (na potrzeby zostawiania markerów w odpowiednich miejscach)
+
             for _ in range(2): 
                 
                 # 1. FAZA PLANOWANIA (Wybór celu)
@@ -453,6 +454,7 @@ class Player:
                     if is_passable or can_walk_on_enemy:
                         if ct.can_move(next_dir):
                             ct.move(next_dir)
+                            future_pos = next_pos
                             self.bot_paths[my_id].pop(0) 
                         break # SUKCES
                     
@@ -462,6 +464,7 @@ class Player:
                             ct.build_road(next_pos)
                             if ct.can_move(next_dir):
                                 ct.move(next_dir)
+                                future_pos = next_pos
                                 self.bot_paths[my_id].pop(0)    
                         break # Zbudowaliśmy, czekamy/kończymy
                     
@@ -482,20 +485,36 @@ class Player:
             # 3. ZOSTAWIANIE FEROMONÓW (GOSSIP PROTOCOL)
             # ==========================================
             # Losujemy jedną nowinę z VIP Facts (tylko ważne odkrycia)
+            forbidden_tiles = {my_pos, future_pos}
+            # Przewidujemy też krok do przodu na następną turę:
+            if self.bot_paths[my_id]:
+                next_planned_pos = future_pos.add(self.bot_paths[my_id][0])
+                forbidden_tiles.add(next_planned_pos)
+
             if self.vip_facts[my_id]:
                 rep_pos = random.choice(list(self.vip_facts[my_id].keys()))
                 rep_env, rep_btype, rep_is_enemy = self.vip_facts[my_id][rep_pos]
                 
-                # Gdzie stawiamy marker
+                # Szukamy NAJLEPSZEGO wolnego miejsca wokół bota
                 place_pos = None
-                
-                # Szukamy wolnego kafelka OBOK bota, żeby zostawić tam marker z informacją. 
-                for adj_pos in ct.get_nearby_tiles(2):
-                    if adj_pos != my_pos and ct.can_place_marker(adj_pos):
+                nearby_tiles = ct.get_nearby_tiles(2)
+
+                # PRZEBIEG 1: Szukamy miejsca IDEALNEGO (poza trasą)
+                for adj_pos in nearby_tiles:
+                    # Warunki idealnego miejsca:
+                    # - Nie ma go na czarnej liście (nie zdepczemy go)
+                    # - Silnik pozwala tam budować (brak przeszkód/innych markerów)
+                    if adj_pos not in forbidden_tiles and ct.can_place_marker(adj_pos):
                         place_pos = adj_pos
-                        break
-                            
-                # Jeśli znaleźliśmy miejsce, pakujemy bity i zostawiamy ślad!
+                        break # Znaleźliśmy pierwsze wolne pobocze!
+                # PRZEBIEG 2: Jeśli wciąż nie mamy miejsca, szukamy GDZIEKOLWIEK (nawet na trasie)
+                if not place_pos:
+                    for adj_pos in nearby_tiles:
+                        if adj_pos != my_pos and ct.can_place_marker(adj_pos):
+                            place_pos = adj_pos
+                            break
+
+                # 4. Jeśli po sprawdzeniu sąsiadów jest wolne miejsce -> Publikujemy
                 if place_pos:
                     marker_payload = self.pack_map_marker(current_round, rep_pos, rep_env, rep_btype, rep_is_enemy)
                     ct.place_marker(place_pos, marker_payload)

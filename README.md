@@ -25,3 +25,6 @@ Drużyna (1 bit): Bit 0 (0=My, 1=Wróg).
 1. Defensywa - postawienie splitterów poza rogami i środkami boków, a w pozostałych miejscach wieżyczki - (gościu stawiał sentinele, ale może lepiej gunnery?)
 2. cannon rush
 3. bunkier na mapie po stronie przeciwnika
+
+
+
