@@ -70,6 +70,10 @@ Drużyna (1 bit): Bit 0 (0=My, 1=Wróg).
 1. Defensywa - postawienie splitterów poza rogami i środkami boków, a w pozostałych miejscach wieżyczki - (gościu stawiał sentinele, ale może lepiej gunnery?)
 2. cannon rush
 3. bunkier na mapie po stronie przeciwnika
+4. swarm botów stojących wokół bazy przeciwnika blokujących ruchy
+5. szybkie zajmowanie wszystkich pól wokół złóż własną drogą
+6. niszczenie harvesterów wroga taktyką gunner + conveyor
+
 
 
 
