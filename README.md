@@ -11,8 +11,6 @@ Druga rzecz - pakiet leci na wersji pythona 3.12 / 3.13. Na nowszych wyskakuje b
 - obecnie markery spamią się z dowolną informacją o wrogiej strukturze - czyli też o drodze. a wolelibyśmy priorytetyzować informacje o ważniejszych budynkach lub o złożach.
 
 
-## Nomenklatura
-Pudel - astar_hybrid_memory_communication_corescan
 
 ## Pomysły
 1. markerynr 1 - do zapisywania lokalnie pewnej drogi do bazy? taki roadmap, albo stawianie ich co jakiś czas

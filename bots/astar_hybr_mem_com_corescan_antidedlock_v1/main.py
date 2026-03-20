@@ -355,6 +355,8 @@ class Player:
                     self.blocked_directions = [Direction.EAST]
                 elif delta_x == -1 and delta_y == -1:
                     self.blocked_directions = [Direction.SOUTHEAST]
+                else:
+                    self.blocked_directions = []
 
             self.is_bot_temporary_blocked = False
                 
