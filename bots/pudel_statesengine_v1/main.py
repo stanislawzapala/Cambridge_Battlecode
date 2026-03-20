@@ -14,6 +14,7 @@ from enum import Enum, auto
 # ==========================================
 class BotState(Enum):
     EXPLORE = auto()         # Losowy zwiad i roznoszenie feromonów
+    SCOUT = auto()           # WIECZNY ZWIADOWCA - tylko biega i roznosi feromony
     BUILD_MINE = auto()      # Znalazł złoże, idzie zbudować Harvester
     BUILD_BELT = auto()      # Zbudował kopalnię, ciągnie taśmociąg do Bazy/Sieci
     BUILD_DEFENSE = auto()   # (Rezerwa) Idzie postawić wieżyczkę w strategicznym miejscu
@@ -60,7 +61,7 @@ class Player:
         # Kluczem w słowniku będzie ID bota (int)
         self.bot_targets: dict[int, Position | None] = {}
         self.bot_paths: dict[int, list[Direction]] = {}
-        
+
         # Pamięć Topograficzna (Niezmienna)
         self.bot_memory: dict[int, dict[Position, Environment]] = {}
         
@@ -75,9 +76,9 @@ class Player:
         self.bot_states: dict[int, BotState] = {}
 
 
-    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team) -> list[Direction] | None:
+    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False) -> list[Direction] | None:
         """
-        Zwraca listę kierunków za pomocą optymistycznego A* (A-Star).
+        Zwraca listę kierunków za pomocą optymistycznego A* (A-Star). Możemy ustawić stop_adjacent=True, jeśli chcemy, żeby bot zatrzymał się na polu obok celu (przydatne np. do budowania).
         """
         
         # Kolejka priorytetowa: trzyma krotki (priorytet, koszt_do_tej_pory, x, y, pozycja)
@@ -88,19 +89,24 @@ class Player:
         cost_so_far = {start: 0}
         iterations = 0
         
-        
+        target_node = None # Zmienna zapamiętująca, gdzie fizycznie skończyliśmy
+
         # Najpierw posortujmy kierunki tak, aby te najbliżej celu (minimalny dystans do targetu) były pierwsze - wyciągamy tylko pierwszy kierunek
         DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
 
         while queue:
             iterations += 1
-            if iterations > 1500:
+            if iterations > 300:
                 return None
             
             # Wyciągamy kafelek, który ma NAJLEPSZY priorytet (najbliżej celu)
             priority, current_cost, _, _, curr = heapq.heappop(queue)
 
-            if curr == target:
+            if stop_adjacent and curr.distance_squared(target) <= 2:
+                target_node = curr
+                break
+            elif not stop_adjacent and curr == target:
+                target_node = curr
                 break
             
             
@@ -170,11 +176,11 @@ class Player:
                     came_from[next_pos] = (curr, d) # type: ignore
 
         # Odtwarzanie ścieżki
-        if target not in came_from:
+        if target_node is None or target_node not in came_from:
             return None 
 
         path = []
-        curr = target
+        curr = target_node
         while curr != start:
             prev_pos, move_dir = came_from[curr]
             path.append(move_dir)
@@ -187,8 +193,6 @@ class Player:
     def can_walk_on_building(self, b_id: int, my_team: Team, ct: Controller) -> bool:
         """Sprawdza, czy można chodzić po budynku wroga (droga/taśmociąg/pancerna taśma)."""
         if b_id is None:
-            return False
-        if ct.get_team(b_id) == my_team:  # Nasz budynek - nie liczy się
             return False
         b_type = ct.get_entity_type(b_id)
         return b_type in [EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD]
@@ -235,6 +239,41 @@ class Player:
         return data
 
 
+    def find_nearest_vip_target(self, my_pos: Position, vip_facts: dict, 
+                                target_envs: list[Environment] = None, 
+                                target_btypes: list[EntityType] = None, 
+                                ownership: str = 'empty') -> Position | None:
+        """
+        Uniwersalna wyszukiwarka w bazie VIP.
+        ownership: 'empty' (brak budynku), 'mine' (nasz budynek), 'enemy' (wrogi budynek), 'any' (obojętnie)
+        """
+        nearest_pos = None
+        min_distance = float('inf')
+        
+        for pos, (env, b_type, is_enemy) in vip_facts.items():
+            # 1. FILTR TERENU (jeśli podano listę, sprawdzamy czy pasuje)
+            if target_envs is not None and env not in target_envs:
+                continue
+                
+            # 2. FILTR BUDYNKU (jeśli podano listę, sprawdzamy czy pasuje)
+            if target_btypes is not None and b_type not in target_btypes:
+                continue
+                
+            # 3. FILTR WŁASNOŚCI
+            if ownership == 'empty' and b_type is not None:
+                continue
+            if ownership == 'mine' and (b_type is None or is_enemy):
+                continue
+            if ownership == 'enemy' and (b_type is None or not is_enemy):
+                continue
+                
+            # Jeśli przeszliśmy wszystkie filtry, sprawdzamy odległość
+            dist = my_pos.distance_squared(pos)
+            if dist < min_distance:
+                min_distance = dist
+                nearest_pos = pos
+                
+        return nearest_pos
 
 
 
@@ -297,7 +336,7 @@ class Player:
                     self.core_facts_to_report.pop()
             
             # PRODUKCJA PROBEK
-            if self.spawned_bots_count < 5 and ct.get_action_cooldown() == 0:
+            if self.spawned_bots_count < 10 and ct.get_action_cooldown() == 0:
                 spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                 if ct.can_spawn(spawn_pos):
                     ct.spawn_builder(spawn_pos)
@@ -322,10 +361,13 @@ class Player:
                 self.bot_buildings[my_id] = {}
                 # Najważniejsze odkrycia
                 self.vip_facts[my_id] = {}
-                # Każdy nowy bot rodzi się jako Zwiadowca
-                self.bot_states[my_id] = BotState.EXPLORE
 
-
+                # POBÓR: Co 4-ty bot zostaje Wiecznym Zwiadowcą, reszta Eksploratorami
+                if random.random() < 0.25:
+                    self.bot_states[my_id] = BotState.SCOUT
+                else:
+                    self.bot_states[my_id] = BotState.EXPLORE
+                    
             # ==========================================
             # 1. SKANOWANIE I AKTUALIZACJA MAPY W PAMIĘCI
             # ==========================================
@@ -348,15 +390,20 @@ class Player:
                     self.bot_buildings[my_id][pos] = (b_type, b_team, current_round)
                     
                     # --- KTO WCHODZI NA LISTĘ VIP? ---
+                    # Wyciągamy PRAWDZIWY teren z pamięci (żeby nie nadpisać rudy pustką!)
+                    real_env = self.bot_memory[my_id].get(pos, ct.get_tile_env(pos))
+                    
                     # 1. WSZYSTKIE budynki wroga
                     if b_team == enemy_team:
-                        self.vip_facts[my_id][pos] = (Environment.EMPTY, b_type, True)
+                        JUNK_ENEMY_BUILDINGS = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE]
+                        if b_type not in JUNK_ENEMY_BUILDINGS:
+                            self.vip_facts[my_id][pos] = (real_env, b_type, True)
                     
                     # 2. NASZE strategiczne budynki (Kopalnie, Wieże, Huty)
                     elif b_team == my_team:
                         VIP_FRIENDLY = [EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER]
                         if b_type in VIP_FRIENDLY:
-                            self.vip_facts[my_id][pos] = (Environment.EMPTY, b_type, False)
+                            self.vip_facts[my_id][pos] = (real_env, b_type, False)
 
                     # CZY TO NASZ MARKER? (Rozpakowujemy informację)
                     if b_type == EntityType.MARKER and b_team == my_team:
@@ -370,9 +417,6 @@ class Player:
                             # A) Aktualizujemy teren z markera (jeśli go jeszcze nie znamy)
                             if m_pos not in self.bot_memory[my_id] and data['env'] in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
                                 self.bot_memory[my_id][m_pos] = data['env']
-                                # Zapamiętaj to w VIP Facts
-                                if data['env'] in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
-                                    self.vip_facts[my_id][m_pos] = (data['env'], None, False)
                             
                             # B) Aktualizujemy budynki z markera (Zabezpieczenie Timestampem!)
                             known_b = self.bot_buildings[my_id].get(m_pos)
@@ -382,9 +426,28 @@ class Player:
                                 m_team = enemy_team if data['is_enemy'] else my_team
                                 if not data['b_type']: m_team = None
                                 self.bot_buildings[my_id][m_pos] = (data['b_type'], m_team, m_turn)
-                                # Zapamiętaj do VIP Facts jeśli to budynek wroga
-                                if data['is_enemy'] and data['b_type'] is not None:
-                                    self.vip_facts[my_id][m_pos] = (Environment.EMPTY, data['b_type'], True)
+
+                                # --- KOMPLEKSOWA AKTUALIZACJA VIP FACTS ---
+                                real_env_marker = self.bot_memory[my_id].get(m_pos, data['env'])
+
+                                if data['b_type'] is not None:
+                                    # Marker mówi, że ktoś coś tu zbudował
+                                    if data['is_enemy']:
+                                        JUNK_ENEMY_BUILDINGS = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE]
+                                        if data['b_type'] not in JUNK_ENEMY_BUILDINGS:
+                                            self.vip_facts[my_id][m_pos] = (real_env_marker, data['b_type'], True)
+                                    else:
+                                        # To NASZ budynek
+                                        VIP_FRIENDLY = [EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER]
+                                        if data['b_type'] in VIP_FRIENDLY:
+                                            self.vip_facts[my_id][m_pos] = (real_env_marker, data['b_type'], False)
+                                else:
+                                    # Marker mówi, że na polu NIE MA budynku. Czy pod spodem jest ruda?
+                                    if data['env'] in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                                        self.vip_facts[my_id][m_pos] = (data['env'], None, False)
+                                    elif m_pos in self.vip_facts[my_id]:
+                                        # Jeśli to zwykły pusty piach, czyścimy z VIP
+                                        del self.vip_facts[my_id][m_pos]
 
                 else:
                     # Pole jest PUSTE. Usuwamy z pamięci budynków, jeśli wcześniej był tam jakiś budynek
@@ -400,106 +463,169 @@ class Player:
                             # To był budynek na pustym polu i został zniszczony. Kasujemy ducha.
                             del self.vip_facts[my_id][pos]
 
+            
             # ==========================================
-            # 2. RUCH - Hybryda Zachłanny Insekt + A* z podwójną pętlą (2 próby ruchu)
+            # 2. MASZYNA STANÓW (MÓZG) - Decyzje i Akcje
             # ==========================================
-            future_pos = my_pos # Do zapamiętania docelowej pozycji po ruchu (na potrzeby zostawiania markerów w odpowiednich miejscach)
-
-            for _ in range(2): 
+            current_state = self.bot_states[my_id]
+            
+            if current_state == BotState.SCOUT:
+                target_pos = self.bot_targets[my_id]
                 
-                # 1. FAZA PLANOWANIA (Wybór celu)
-                if self.bot_targets[my_id] and my_pos == self.bot_targets[my_id]:
-                    self.bot_targets[my_id] = None
-                    self.bot_paths[my_id] = []
+                # ZABEZPIECZENIE: Sprawdzamy z pamięci, czy cel nie wypadł w skale
+                target_is_wall = target_pos and self.bot_memory[my_id].get(target_pos) in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]
                 
-                if not self.bot_targets[my_id]:
+                # Wieczny zwiad - resetujemy cel, jeśli doszliśmy, nie mamy go, ALBO jest on w ścianie!
+                if not target_pos or my_pos == target_pos or target_is_wall:
                     self.bot_targets[my_id] = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
-                    self.bot_paths[my_id] = [] # Czyścimy trasę na wszelki wypadek
-                
+                    self.bot_paths[my_id] = []
+
+            elif current_state == BotState.EXPLORE:
+                if not self.bot_targets[my_id] or current_round % 5 == 0: 
+                    # Szuka pustej rudy
+                    found_ore_pos = self.find_nearest_vip_target(
+                        my_pos, 
+                        self.vip_facts[my_id], 
+                        target_envs=[Environment.ORE_TITANIUM, Environment.ORE_AXIONITE],
+                        ownership='empty'
+                    )
+                    if found_ore_pos:
+                        self.bot_states[my_id] = BotState.BUILD_MINE
+                        self.bot_targets[my_id] = found_ore_pos
+                        self.bot_paths[my_id] = []
+                        
+                # Jeśli nadal eksploruje i nie ma celu (lub dotarł do celu), losuje nowy
+                if self.bot_states[my_id] == BotState.EXPLORE:
+                    if not self.bot_targets[my_id] or my_pos == self.bot_targets[my_id]:
+                        self.bot_targets[my_id] = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
+                        self.bot_paths[my_id] = []
+
+            elif current_state == BotState.BUILD_MINE:
                 target_pos = self.bot_targets[my_id]
 
-                # --- NOWA LOGIKA: ZACHŁANNY INSEKT vs A* ---
-                if target_pos and not self.bot_paths[my_id]: 
+                # 0. ZABEZPIECZENIE: Jeśli zgubiliśmy cel (np. A* skasowało go z powodu braku drogi)
+                if not target_pos:
+                    self.bot_states[my_id] = BotState.EXPLORE
+                    self.bot_paths[my_id] = []
+                else:
+                    # 1. SANITY CHECK: Czy ktoś nas ubiegł?
+                    b_type, b_team, _ = self.bot_buildings[my_id].get(target_pos, (None, None, -1))
+                    if b_type is not None and b_type != EntityType.MARKER:
+                        # Cel zajęty, wracamy do zwiadu
+                        self.bot_states[my_id] = BotState.EXPLORE
+                        self.bot_targets[my_id] = None
+                        self.bot_paths[my_id] = []
                     
-                    # KROK 1: Próba Zachłanna (Prosto do celu)
-                    greedy_dir = my_pos.direction_to(target_pos)
-                    greedy_pos = my_pos.add(greedy_dir)
-                    
-                    # Sprawdzamy, z czym mamy do czynienia
-                    env = ct.get_tile_env(greedy_pos)
-                    b_id = ct.get_tile_building_id(greedy_pos)
-                    can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
-
-                    # Sprawdzenie pamięci
-                    memory_env = self.bot_memory[my_id].get(greedy_pos)
-                    
-                    is_hard_obstacle = (memory_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or 
-                                       (env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] and memory_env is None) or 
-                                       (b_id is not None and not can_walk_on_enemy))
-                    
-                    out_of_bounds = not (0 <= greedy_pos.x < map_width and 0 <= greedy_pos.y < map_height)
-                    
-                    if not is_hard_obstacle and not out_of_bounds:
-                        # Droga wolna! Zapisujemy jeden zachłanny krok.
-                        self.bot_paths[my_id] = [greedy_dir]
-                    else:
-                        # KROK 2: Uderzenie w przeszkodę -> Tryb Awaryjny (A*)
-                        self.bot_paths[my_id] = self.calculate_astar_path(ct, my_pos, target_pos, map_width, map_height, my_id, my_team) # type: ignore
-                        
-                        if not self.bot_paths[my_id]:
-                            self.bot_targets[my_id] = None
-                            break  # Cel całkowicie zablokowany, w następnej turze losujemy nowy
-                
-                # Wizualizacja celu
-                if self.bot_targets[my_id]:
-                    try:
-                        ct.draw_indicator_dot(self.bot_targets[my_id], 255, 255, 0) # type: ignore
-                        ct.draw_indicator_line(my_pos, self.bot_targets[my_id], 0, 200, 255) # type: ignore
-                    except Exception:
-                        pass
-
-                # 2. FAZA WYKONANIA: (Kod pozostaje ten sam, wykonuje krok z góry listy)
-                if self.bot_paths[my_id]:
-                    next_dir = self.bot_paths[my_id][0]
-                    next_pos = my_pos.add(next_dir)
-
-                    is_passable = ct.is_tile_passable(next_pos)
-                    b_id = ct.get_tile_building_id(next_pos)
-                    can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
-
-                    # PRZYPADEK A: Możemy od razu wejść
-                    if is_passable or can_walk_on_enemy:
-                        if ct.can_move(next_dir):
-                            ct.move(next_dir)
-                            future_pos = next_pos
-                            self.bot_paths[my_id].pop(0) 
-                        break # SUKCES
-                    
-                    # PRZYPADEK B: Wybudowanie Drogi
-                    elif ct.can_build_road(next_pos):
+                    # 2. Jesteśmy przy rudzie? BUDUJEMY!
+                    elif my_pos.distance_squared(target_pos) <= 2:
                         if ct.get_action_cooldown() == 0:
-                            ct.build_road(next_pos)
-                            if ct.can_move(next_dir):
-                                ct.move(next_dir)
-                                future_pos = next_pos
-                                self.bot_paths[my_id].pop(0)    
-                        break # Zbudowaliśmy, czekamy/kończymy
-                    
-                    # PRZYPADEK C: Niespodziewana przeszkoda NA TRASIE z A*
-                    else:
-                        env = ct.get_tile_env(next_pos)
-                        if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or b_id is not None:
-                            # TRWAŁA BLOKADA - Kasujemy listę. Pętla "for" obróci się drugi raz 
-                            # i wywoła Tryb Zachłanny (który od razu potknie się o nową ścianę i odpali A*).
-                            self.bot_paths[my_id] = []
-                            continue 
+                            if ct.can_build_harvester(target_pos):
+                                ct.build_harvester(target_pos)
+                                
+                                if target_pos in self.vip_facts[my_id]:
+                                    env = self.vip_facts[my_id][target_pos][0]
+                                    self.vip_facts[my_id][target_pos] = (env, EntityType.HARVESTER, False)
+                                
+                                self.bot_states[my_id] = BotState.BUILD_BELT
+                                self.bot_targets[my_id] = None # Zbudowane! Kasujemy cel ruchu, więc bot nigdzie nie pójdzie w tej turze
                         else:
-                            # Tymczasowa blokada (np. weszliśmy na innego bota)
-                            break # Stoję i czekam
-            
-            
+                            # Czekamy na cooldown. Kasujemy path, żeby przypadkiem nie chodzić wokół rudy.
+                            self.bot_paths[my_id] = []
+                            # Nie ruszamy target_pos, żeby bot wiedział, gdzie ma stać
+                        
+
+            elif current_state == BotState.BUILD_BELT:
+                # Na razie nic tu nie ma. 
+                # (W przyszłości wyznaczymy tu cel na Bazę)
+                pass
+
+
             # ==========================================
-            # 3. ZOSTAWIANIE FEROMONÓW (GOSSIP PROTOCOL)
+            # 3. RUCH (NOGI) - Wykonuje się tylko, gdy mamy gdzie iść
+            # ==========================================
+            future_pos = my_pos
+            target_pos = self.bot_targets[my_id]
+            
+            # Wizualizacja
+            if target_pos:
+                try:
+                    ct.draw_indicator_dot(target_pos, 255, 255, 0) # type: ignore
+                    ct.draw_indicator_line(my_pos, target_pos, 0, 200, 255) # type: ignore
+                except Exception:
+                    pass
+
+            # Czy bot idzie budować kopalnię?
+            is_building = (self.bot_states[my_id] == BotState.BUILD_MINE)
+
+            # HAMULEC: Zatrzymujemy się krok przed celem TYLKO, gdy idziemy budować.
+            # Zwiadowcy muszą wejść na sam punkt, żeby go zresetować!
+            if target_pos:
+                if not is_building or my_pos.distance_squared(target_pos) > 2:
+                    
+                    for _ in range(2): 
+                        if not self.bot_paths[my_id]: 
+                            # KROK 1: Próba Zachłanna
+                            greedy_dir = my_pos.direction_to(target_pos)
+                            greedy_pos = my_pos.add(greedy_dir)
+                            
+                            out_of_bounds = not (0 <= greedy_pos.x < map_width and 0 <= greedy_pos.y < map_height)
+                            
+                            if out_of_bounds:
+                                is_hard_obstacle = True
+                            else:
+                                env = ct.get_tile_env(greedy_pos)
+                                b_id = ct.get_tile_building_id(greedy_pos)
+                                can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
+                                memory_env = self.bot_memory[my_id].get(greedy_pos)
+                                
+                                is_hard_obstacle = (memory_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or 
+                                                (env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] and memory_env is None) or 
+                                                (b_id is not None and not can_walk_on_enemy))
+                            
+                            if not is_hard_obstacle and not out_of_bounds:
+                                self.bot_paths[my_id] = [greedy_dir]
+                            else:
+                                # KROK 2: Uderzenie w przeszkodę -> KAŻDY używa A*, żeby ładnie omijać ściany
+                                self.bot_paths[my_id] = self.calculate_astar_path(
+                                    ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
+                                    stop_adjacent=is_building # <--- Używamy zmiennej, żeby budowniczowie stawali krok przed, a zwiadowcy wchodzili na cel
+                                ) or [] # Jeśli A* nie znajdzie ścieżki, zostawiamy pustą listę, żeby nie próbować chodzić w ciemno
+                    
+                        # FAZA WYKONANIA
+                        if self.bot_paths[my_id]:
+                            next_dir = self.bot_paths[my_id][0]
+                            next_pos = my_pos.add(next_dir)
+                            
+                            is_passable = ct.is_tile_passable(next_pos)
+                            b_id = ct.get_tile_building_id(next_pos)
+                            can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
+
+                            if is_passable or can_walk_on_enemy:
+                                if ct.can_move(next_dir):
+                                    ct.move(next_dir)
+                                    future_pos = next_pos
+                                    self.bot_paths[my_id].pop(0) 
+                                break 
+                            elif ct.can_build_road(next_pos):
+                                if ct.get_action_cooldown() == 0:
+                                    ct.build_road(next_pos)
+                                    if ct.can_move(next_dir):
+                                        ct.move(next_dir)
+                                        future_pos = next_pos
+                                        self.bot_paths[my_id].pop(0)    
+                                break 
+                            else:
+                                # Przeszkoda
+                                env = ct.get_tile_env(next_pos)
+                                if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or b_id is not None:
+                                    self.bot_paths[my_id] = []
+                                    continue 
+                                else:
+                                    break 
+
+
+            # ==========================================
+            # 4. ZOSTAWIANIE FEROMONÓW (GOSSIP PROTOCOL)
             # ==========================================
             # Losujemy jedną nowinę z VIP Facts (tylko ważne odkrycia)
             forbidden_tiles = {my_pos, future_pos}

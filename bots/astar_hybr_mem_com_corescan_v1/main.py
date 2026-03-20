@@ -175,8 +175,6 @@ class Player:
         """Sprawdza, czy można chodzić po budynku wroga (droga/taśmociąg/pancerna taśma)."""
         if b_id is None:
             return False
-        if ct.get_team(b_id) == my_team:  # Nasz budynek - nie liczy się
-            return False
         b_type = ct.get_entity_type(b_id)
         return b_type in [EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD]
     
