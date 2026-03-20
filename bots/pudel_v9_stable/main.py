@@ -42,7 +42,8 @@ INT_TO_ENTITY = {i+1: e for i, e in enumerate(ENTITY_TYPES)}
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 
 
-
+# Typy budynków, po których można chodzić (droga, taśmociąg, pancerna taśma, marker)
+passable_b_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.MARKER]
 
 
 
@@ -75,10 +76,13 @@ class Player:
         # Maszyna Stanów: W jakim trybie jest obecnie dany bot?
         self.bot_states: dict[int, BotState] = {}
 
+       
 
     def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False) -> list[Direction] | None:
         """
-        Zwraca listę kierunków za pomocą optymistycznego A* (A-Star). Możemy ustawić stop_adjacent=True, jeśli chcemy, żeby bot zatrzymał się na polu obok celu (przydatne np. do budowania).
+        Zwraca listę kierunków za pomocą optymistycznego Frontier A* (Frontier A-Star). 
+        Możemy ustawić stop_adjacent=True, jeśli chcemy, żeby bot zatrzymał się na polu obok celu (przydatne np. do budowania).
+        Możemy dodać blocked_directions, czyli listę kierunków, których bot ma unikać.
         """
         
         # Kolejka priorytetowa: trzyma krotki (priorytet, koszt_do_tej_pory, x, y, pozycja)
@@ -97,7 +101,13 @@ class Player:
         while queue:
             iterations += 1
             if iterations > 300:
-                return None
+                # FRONTIER A*: Skończył się limit czasu! 
+                # Zamiast się poddawać, wyciągamy z kolejki NAJLEPSZY punkt, który A* zamierzał właśnie sprawdzić.
+                if queue:
+                    _, _, _, _, best_node = heapq.heappop(queue)
+                    target_node = best_node
+                break
+            
             
             # Wyciągamy kafelek, który ma NAJLEPSZY priorytet (najbliżej celu)
             priority, current_cost, _, _, curr = heapq.heappop(queue)
@@ -140,7 +150,7 @@ class Player:
                         # Budynki
                         elif b_id is not None:
                             b_type = ct.get_entity_type(b_id)
-                            passable_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR]
+                            passable_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.MARKER]
                             
                             # Jeśli to nie jest droga/taśmociąg i nie jest to nasz Rdzeń, to nas blokuje
                             if b_type not in passable_types and b_type != EntityType.CORE:
@@ -295,7 +305,7 @@ class Player:
         my_id = ct.get_id()
 
         # ==========================================
-        # 1. LOGIKA BAZY (CORE) - na razie tylko produkcja probek
+        # 1. LOGIKA BAZY (CORE) 
         # ==========================================
         if etype == EntityType.CORE:
             # PROTOKÓŁ ROZRUCHOWY 
@@ -316,7 +326,7 @@ class Player:
                 self.core_facts_to_report = found_walls + found_ores
                 self.starting_protocol = True
             
-            # B) DYREKTYWA SYNAPSA ZER (cokolwiek to jest) - Zostawiamy ślady o najważniejszych odkryciach z protokołu rozruchowego (ściany i rudy)
+            # B) DYREKTYWA SYNAPSA ZERO - Zostawiamy ślady o najważniejszych odkryciach z protokołu rozruchowego (ściany i rudy)
             # Dopóki nie wyczerpiemy listy, bot będzie zostawiał markery z informacjami o tych kluczowych pozycjach
             if self.core_facts_to_report:
                 # Patrzymy na ostatni element w kolejce
@@ -346,7 +356,7 @@ class Player:
 
 
         # ==========================================
-        # 2. LOGIKA PROBY (BUILDER_BOT) - Hybryda (Greedy + A*)
+        # 2. LOGIKA PROBY (BUILDER_BOT)
         # ==========================================
         elif etype == EntityType.BUILDER_BOT:
             
@@ -361,13 +371,14 @@ class Player:
                 self.bot_buildings[my_id] = {}
                 # Najważniejsze odkrycia
                 self.vip_facts[my_id] = {}
-
+                
                 # POBÓR: Co 4-ty bot zostaje Wiecznym Zwiadowcą, reszta Eksploratorami
                 if random.random() < 0.25:
                     self.bot_states[my_id] = BotState.SCOUT
                 else:
                     self.bot_states[my_id] = BotState.EXPLORE
-                    
+            
+            
             # ==========================================
             # 1. SKANOWANIE I AKTUALIZACJA MAPY W PAMIĘCI
             # ==========================================
@@ -526,7 +537,7 @@ class Player:
                                     env = self.vip_facts[my_id][target_pos][0]
                                     self.vip_facts[my_id][target_pos] = (env, EntityType.HARVESTER, False)
                                 
-                                self.bot_states[my_id] = BotState.BUILD_BELT
+                                self.bot_states[my_id] = BotState.EXPLORE
                                 self.bot_targets[my_id] = None # Zbudowane! Kasujemy cel ruchu, więc bot nigdzie nie pójdzie w tej turze
                         else:
                             # Czekamy na cooldown. Kasujemy path, żeby przypadkiem nie chodzić wokół rudy.
@@ -574,13 +585,16 @@ class Player:
                                 is_hard_obstacle = True
                             else:
                                 env = ct.get_tile_env(greedy_pos)
-                                b_id = ct.get_tile_building_id(greedy_pos)
-                                can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
                                 memory_env = self.bot_memory[my_id].get(greedy_pos)
-                                
+                                b_id = ct.get_tile_building_id(greedy_pos)
+                                b_type = ct.get_entity_type(b_id) if b_id is not None else None
+                                can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
+                                is_allied_core = (b_type == EntityType.CORE and ct.get_team(b_id) == my_team)
+
+                                # Twarda przeszkoda to: Ściana/Ruda ALBO budynek, który NIE JEST markerem i po którym nie da się chodzić
                                 is_hard_obstacle = (memory_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or 
                                                 (env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] and memory_env is None) or 
-                                                (b_id is not None and not can_walk_on_enemy))
+                                                (b_id is not None and b_type not in passable_b_types and not can_walk_on_enemy and not is_allied_core))
                             
                             if not is_hard_obstacle and not out_of_bounds:
                                 self.bot_paths[my_id] = [greedy_dir]
@@ -595,33 +609,49 @@ class Player:
                         if self.bot_paths[my_id]:
                             next_dir = self.bot_paths[my_id][0]
                             next_pos = my_pos.add(next_dir)
-                            
-                            is_passable = ct.is_tile_passable(next_pos)
-                            b_id = ct.get_tile_building_id(next_pos)
-                            can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
 
-                            if is_passable or can_walk_on_enemy:
-                                if ct.can_move(next_dir):
-                                    ct.move(next_dir)
-                                    future_pos = next_pos
-                                    self.bot_paths[my_id].pop(0) 
-                                break 
+                            # 1. Próbujemy iść optymalnie
+                            if ct.can_move(next_dir):
+                                ct.move(next_dir)
+                                future_pos = next_pos
+                                self.bot_paths[my_id].pop(0) 
+                                break # Ruch wykonany, wyskakujemy z pętli range(2)
+
+                            # 2. Nie możemy iść optymalnie bez budowania? Próbujemy zbudować drogę
                             elif ct.can_build_road(next_pos):
                                 if ct.get_action_cooldown() == 0:
                                     ct.build_road(next_pos)
                                     if ct.can_move(next_dir):
                                         ct.move(next_dir)
                                         future_pos = next_pos
-                                        self.bot_paths[my_id].pop(0)    
-                                break 
+                                        self.bot_paths[my_id].pop(0)
+                                break # Zbudowaliśmy drogę (lub czekamy na cooldown), koniec akcji w tej turze
+
+                            # 3. Nie możemy iść optymalnie i nie możemy zbudować drogi - sprawdzamy, co nas blokuje
                             else:
-                                # Przeszkoda
-                                env = ct.get_tile_env(next_pos)
-                                if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or b_id is not None:
-                                    self.bot_paths[my_id] = []
-                                    continue 
+                                # PYTAMY WPROST: Czy na tym polu fizycznie stoi jakiś bot?
+                                blocking_bot_id = ct.get_tile_builder_bot_id(next_pos)
+                                
+                                if blocking_bot_id is not None:
+                                    # Blokuje nas ruchoma jednostka (Miękka przeszkoda)
+                                    # Odpalamy unik (Reaktywne omijanie)
+                                    alt_directions = sorted(DIRECTIONS, key=lambda d: my_pos.add(d).distance_squared(target_pos))
+                                    
+                                    for alt_dir in alt_directions:
+                                        if alt_dir != next_dir and ct.can_move(alt_dir):
+                                            ct.move(alt_dir)
+                                            future_pos = my_pos.add(alt_dir)
+                                            self.bot_paths[my_id] = [] # Reset trasy, po uniku liczymy A* od nowa
+                                            break
+                                    else:
+                                        self.bot_paths[my_id] = [] # Jeśli nie udało się znaleźć żadnego wolnego pola do uniku, resetujemy trasę, żeby w następnej turze przeliczyć A* z aktualną sytuacją na mapie        
+                                    
+                                    break # Kończymy turę ruchu
                                 else:
-                                    break 
+                                    # Blokuje nas twarda przeszkoda, której nie wykryliśmy (może to być np. nowo zbudowany budynek, którego jeszcze nie ma w pamięci)
+                                    # Resetujemy trasę, żeby w następnej turze przeliczyć A* z aktualną sytuacją na mapie
+                                    self.bot_paths[my_id] = []
+                                    break # Kończymy turę ruchu
 
 
             # ==========================================
@@ -638,26 +668,20 @@ class Player:
                 rep_pos = random.choice(list(self.vip_facts[my_id].keys()))
                 rep_env, rep_btype, rep_is_enemy = self.vip_facts[my_id][rep_pos]
                 
-                # Szukamy NAJLEPSZEGO wolnego miejsca wokół bota
+                # Szukamy miejsca w JEDNYM przebiegu
                 place_pos = None
-                nearby_tiles = ct.get_nearby_tiles(2)
-
-                # PRZEBIEG 1: Szukamy miejsca IDEALNEGO (poza trasą)
-                for adj_pos in nearby_tiles:
-                    # Warunki idealnego miejsca:
-                    # - Nie ma go na czarnej liście (nie zdepczemy go)
-                    # - Silnik pozwala tam budować (brak przeszkód/innych markerów)
-                    if adj_pos not in forbidden_tiles and ct.can_place_marker(adj_pos):
-                        place_pos = adj_pos
-                        break # Znaleźliśmy pierwsze wolne pobocze!
-                # PRZEBIEG 2: Jeśli wciąż nie mamy miejsca, szukamy GDZIEKOLWIEK (nawet na trasie)
-                if not place_pos:
-                    for adj_pos in nearby_tiles:
-                        if adj_pos != my_pos and ct.can_place_marker(adj_pos):
+                backup_pos = None
+                
+                for adj_pos in ct.get_nearby_tiles(2):
+                    if ct.can_place_marker(adj_pos):
+                        if adj_pos not in forbidden_tiles:
                             place_pos = adj_pos
-                            break
-
-                # 4. Jeśli po sprawdzeniu sąsiadów jest wolne miejsce -> Publikujemy
-                if place_pos:
-                    marker_payload = self.pack_map_marker(current_round, rep_pos, rep_env, rep_btype, rep_is_enemy)
-                    ct.place_marker(place_pos, marker_payload)
+                            break # Mamy ideał, kończymy pętlę!
+                        elif backup_pos is None and adj_pos != my_pos:
+                            backup_pos = adj_pos # Zapisujemy Plan B, ale szukamy dalej
+                
+                # Używamy ideału, a jak go nie ma (None), bierzemy Plan B
+                final_pos = place_pos or backup_pos
+                
+                if final_pos:
+                    ct.place_marker(final_pos, self.pack_map_marker(current_round, rep_pos, rep_env, rep_btype, rep_is_enemy))

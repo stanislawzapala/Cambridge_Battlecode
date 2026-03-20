@@ -9,6 +9,10 @@ Cambridge Battlecode challenge
 
 ---
 
+## To do list
+- pozamieniać self.słowniki na self.wartości. np self.bots_id. bo obecnie jest tak, jakby miały współdzieloną pamięć
+- obecnie markery spamią się z dowolną informacją o wrogiej strukturze - czyli też o drodze. a wolelibyśmy priorytetyzować informacje o ważniejszych budynkach lub o złożach.
+
 ## Historia Wersji (Archiwum)
 
 * **v8: Anti-Deadlock** 
@@ -20,6 +24,7 @@ Cambridge Battlecode challenge
   - Boty zyskały "Mózg" i potrafią zmieniać role (EXPLORE, SCOUT, BUILD_MINE, BUILD_BELT).
   - Implementacja Partial A* (zatrzymywanie się obok celu i omijanie ogromnych przeszkód).
   - Ignorowanie markerów na złożach podczas budowy.
+  - Poprawienie elementów listy VIP - wyrzucenie z niej dróg i conveyorów wroga. Teraz rzeczywiście vip.
 
 * **v6: Core Scan** 
   - Rdzeń (Core) przy starcie skanuje otoczenie i wysyła pierwsze feromony, dając botom początkową wiedzę o mapie ("Protokół Rozruchowy").
@@ -49,8 +54,7 @@ UWAGA - potrzeba połączenia z rustem (ja musiałem zainstalować visual studio
 Druga rzecz - pakiet leci na wersji pythona 3.12 / 3.13. Na nowszych wyskakuje błąd.
 
 
-## To do list
-- obecnie markery spamią się z dowolną informacją o wrogiej strukturze - czyli też o drodze. a wolelibyśmy priorytetyzować informacje o ważniejszych budynkach lub o złożach.
+
 
 
 ## Pomysły
