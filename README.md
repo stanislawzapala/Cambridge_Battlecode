@@ -22,19 +22,19 @@ Cambridge Battlecode challenge
   - Ignorowanie markerów na złożach podczas budowy.
 
 * **v6: Core Scan** 
-- Rdzeń (Core) przy starcie skanuje otoczenie i wysyła pierwsze feromony, dając botom początkową wiedzę o mapie ("Protokół Rozruchowy").
+  - Rdzeń (Core) przy starcie skanuje otoczenie i wysyła pierwsze feromony, dając botom początkową wiedzę o mapie ("Protokół Rozruchowy").
 
 * **v5: Feromony (Komunikacja)**  
-- Wdrożenie systemu komunikacji między botami ("Gossip Protocol"). Boty zapisują odkrycia w koderze markerów i czytają znaczniki innych botów, tworząc współdzieloną Listę VIP (POI).
+  - Wdrożenie systemu komunikacji między botami ("Gossip Protocol"). Boty zapisują odkrycia w koderze markerów i czytają znaczniki innych botów, tworząc współdzieloną Listę VIP (POI).
 
 * **v4: Pamięć (Memory)** 
-- Boty zyskały indywidualną pamięć topograficzną (ściany, rudy) oraz pamięć dynamiczną z timestampami (budynki, sojusznicy, wrogowie).
+  - Boty zyskały indywidualną pamięć topograficzną (ściany, rudy) oraz pamięć dynamiczną z timestampami (budynki, sojusznicy, wrogowie).
 
 * **v3: Ruch Hybrydowy** 
-- Optymalizacja zużycia procesora: boty idą prosto do celu ("Zachłanny Insekt"), a algorytmu A* używają tylko w sytuacjach awaryjnych (uderzenie w przeszkodę).
+  - Optymalizacja zużycia procesora: boty idą prosto do celu ("Zachłanny Insekt"), a algorytmu A* używają tylko w sytuacjach awaryjnych (uderzenie w przeszkodę).
 
 * **v1-v2: Nawigacja A*** 
-- Podstawy ruchu oparte na algorytmie A-Star i jego wstępne optymalizacje. 
+  - Podstawy ruchu oparte na algorytmie A-Star i jego wstępne optymalizacje. 
 
 
 
