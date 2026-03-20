@@ -401,7 +401,7 @@ class Player:
                     b_team = ct.get_team(b_id)
                     self.bot_buildings[my_id][pos] = (b_type, b_team, current_round)
                     
-                    # >>> Zapisujemy kafelki bazy (widzimy je zaraz po spawnie) <<<
+                    # >>> Zapisujemy kafelki naszej bazy (widzimy je zaraz po spawnie) <<<
                     if b_type == EntityType.CORE and b_team == my_team:
                         self.allied_core_tiles.add(pos)
 
@@ -601,7 +601,8 @@ class Player:
                         
                         # --- FAZA WYKONANIA ---
                         if best_start and best_end:
-                            
+                            self.bot_targets[my_id] = best_start
+
                             # SYTUACJA 1: Bot stoi centralnie na polu, z którego chce zacząć budować most
                             if my_pos == best_start:
                                 # Musimy z niego zejść! Robimy krok obok (najlepiej w kierunku końca mostu)
@@ -630,9 +631,7 @@ class Player:
 
                             # SYTUACJA 3: Bot jest za daleko
                             else:
-                                # Ustawiamy mu cel na best_start. Nasz system ruchu w Sekcji 3 wyłapie
-                                # is_building = True i grzecznie zatrzyma bota DOKŁADNIE krok przed celem.
-                                self.bot_targets[my_id] = best_start
+                                pass
                                 
                         else:
                             # Kompletny ślepy zaułek - z żadnej strony węzła nie da się pociągnąć mostu.
