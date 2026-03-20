@@ -13,6 +13,17 @@ Cambridge Battlecode challenge
 - pozamieniać self.słowniki na self.wartości. np self.bots_id. bo obecnie jest tak, jakby miały współdzieloną pamięć
 - obecnie markery spamią się z dowolną informacją o wrogiej strukturze - czyli też o drodze. a wolelibyśmy priorytetyzować informacje o ważniejszych budynkach lub o złożach.
 
+
+## Podpatrzone taktyki:
+0. (!!!) Produkcja probek, któe stoją na kluczowych dla nas mostach!
+1. Defensywa - postawienie splitterów poza rogami i środkami boków, a w pozostałych miejscach wieżyczki - (gościu stawiał sentinele, ale może lepiej gunnery?)
+2. cannon rush
+3. bunkier na mapie po stronie przeciwnika
+4. swarm botów stojących wokół bazy przeciwnika blokujących ruchy
+5. szybkie zajmowanie wszystkich pól wokół złóż własną drogą
+6. niszczenie harvesterów wroga taktyką gunner + conveyor
+
+
 ## Historia Wersji (Archiwum)
 
 * **v8: Anti-Deadlock** 
@@ -70,13 +81,6 @@ Budynek (4 bity): Bity 1-4 (0=Brak, 1=CORE, itd.).
 Drużyna (1 bit): Bit 0 (0=My, 1=Wróg).
 
 
-## Podpatrzone taktyki:
-1. Defensywa - postawienie splitterów poza rogami i środkami boków, a w pozostałych miejscach wieżyczki - (gościu stawiał sentinele, ale może lepiej gunnery?)
-2. cannon rush
-3. bunkier na mapie po stronie przeciwnika
-4. swarm botów stojących wokół bazy przeciwnika blokujących ruchy
-5. szybkie zajmowanie wszystkich pól wokół złóż własną drogą
-6. niszczenie harvesterów wroga taktyką gunner + conveyor
 
 
 

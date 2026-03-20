@@ -40,10 +40,11 @@ INT_TO_ENTITY = {i+1: e for i, e in enumerate(ENTITY_TYPES)}
 
 # Kierunki (bez CENTRE)
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
+ORTHOGONAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
 
 
 # Typy budynków, po których można chodzić (droga, taśmociąg, pancerna taśma, marker)
-passable_b_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.MARKER]
+passable_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.MARKER]
 
 
 
@@ -56,6 +57,8 @@ class Player:
         self.starting_protocol = False
         self.core_facts_to_report = []
         
+        # MAPA BAZY (Rdzeń + otoczenie)
+        self.allied_core_tiles: set[Position] = set()
 
         # PROBES (Builder Bot)
         # PAMIĘĆ DLA BOTÓW
@@ -76,6 +79,8 @@ class Player:
         # Maszyna Stanów: W jakim trybie jest obecnie dany bot?
         self.bot_states: dict[int, BotState] = {}
 
+        # Węzeł, od którego bot aktualnie buduje sieć mostów
+        self.last_bridge_node: dict[int, Position] = {}
        
 
     def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False) -> list[Direction] | None:
@@ -150,7 +155,6 @@ class Player:
                         # Budynki
                         elif b_id is not None:
                             b_type = ct.get_entity_type(b_id)
-                            passable_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.MARKER]
                             
                             # Jeśli to nie jest droga/taśmociąg i nie jest to nasz Rdzeń, to nas blokuje
                             if b_type not in passable_types and b_type != EntityType.CORE:
@@ -346,7 +350,7 @@ class Player:
                     self.core_facts_to_report.pop()
             
             # PRODUKCJA PROBEK
-            if self.spawned_bots_count < 10 and ct.get_action_cooldown() == 0:
+            if self.spawned_bots_count < 1 and ct.get_action_cooldown() == 0:
                 spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                 if ct.can_spawn(spawn_pos):
                     ct.spawn_builder(spawn_pos)
@@ -372,11 +376,8 @@ class Player:
                 # Najważniejsze odkrycia
                 self.vip_facts[my_id] = {}
                 
-                # POBÓR: Co 4-ty bot zostaje Wiecznym Zwiadowcą, reszta Eksploratorami
-                if random.random() < 0.25:
-                    self.bot_states[my_id] = BotState.SCOUT
-                else:
-                    self.bot_states[my_id] = BotState.EXPLORE
+                # Początkowy stan - EXPLORE
+                self.bot_states[my_id] = BotState.EXPLORE
             
             
             # ==========================================
@@ -400,6 +401,10 @@ class Player:
                     b_team = ct.get_team(b_id)
                     self.bot_buildings[my_id][pos] = (b_type, b_team, current_round)
                     
+                    # >>> Zapisujemy kafelki bazy (widzimy je zaraz po spawnie) <<<
+                    if b_type == EntityType.CORE and b_team == my_team:
+                        self.allied_core_tiles.add(pos)
+
                     # --- KTO WCHODZI NA LISTĘ VIP? ---
                     # Wyciągamy PRAWDZIWY teren z pamięci (żeby nie nadpisać rudy pustką!)
                     real_env = self.bot_memory[my_id].get(pos, ct.get_tile_env(pos))
@@ -537,8 +542,9 @@ class Player:
                                     env = self.vip_facts[my_id][target_pos][0]
                                     self.vip_facts[my_id][target_pos] = (env, EntityType.HARVESTER, False)
                                 
-                                self.bot_states[my_id] = BotState.EXPLORE
-                                self.bot_targets[my_id] = None # Zbudowane! Kasujemy cel ruchu, więc bot nigdzie nie pójdzie w tej turze
+                                self.bot_states[my_id] = BotState.BUILD_BELT
+                                self.last_bridge_node[my_id] = target_pos
+                                self.bot_targets[my_id] = target_pos
                         else:
                             # Czekamy na cooldown. Kasujemy path, żeby przypadkiem nie chodzić wokół rudy.
                             self.bot_paths[my_id] = []
@@ -546,9 +552,94 @@ class Player:
                         
 
             elif current_state == BotState.BUILD_BELT:
-                # Na razie nic tu nie ma. 
-                # (W przyszłości wyznaczymy tu cel na Bazę)
-                pass
+                # last_node to punkt, Z KTÓREGO chcemy wyciągnąć rudę (Kopalnia lub koniec ostatniego mostu)
+                last_node = self.last_bridge_node.get(my_id)
+                
+                if not self.allied_core_tiles or not last_node:
+                    self.bot_states[my_id] = BotState.EXPLORE
+                    self.bot_targets[my_id] = None
+                else:
+                    # Szukamy, do którego kafelka bazy mamy najbliżej z naszego źródła
+                    target_core_tile = min(self.allied_core_tiles, key=lambda p: last_node.distance_squared(p))
+                    
+                    # Jeśli nasze źródło jest już przy samej bazie (stykają się), misja skończona!
+                    if last_node.distance_squared(target_core_tile) <= 2:
+                        self.bot_states[my_id] = BotState.EXPLORE
+                        self.bot_targets[my_id] = None
+                    else:
+                        best_start = None
+                        best_end = None
+                        min_dist_to_core = float('inf')
+                        
+                        # --- FAZA PLANOWANIA (Znajdujemy najlepszy most, niezależnie gdzie jest bot) ---
+                        for d_start in ORTHOGONAL_DIRECTIONS:
+                            start_pos = last_node.add(d_start)
+                            
+                            # 1. FILTR STARTU: Ochrona rudy i omijanie ścian
+                            # Zabezpieczamy odczyt - jeśli nie znamy terenu, zakładamy EMPTY
+                            start_env = self.bot_memory[my_id].get(start_pos, ct.get_tile_env(start_pos) if ct.is_in_vision(start_pos) else Environment.EMPTY)
+                            if start_env in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE, Environment.WALL]:
+                                continue
+
+                            for dx in range(-3, 4):
+                                for dy in range(-3, 4):
+                                    
+                                    end_pos = Position(start_pos.x + dx, start_pos.y + dy)
+                                    
+                                    if start_pos.distance_squared(end_pos) <= 9 and start_pos != end_pos:
+                                        d_core = end_pos.distance_squared(target_core_tile)
+                                        
+                                        # 2. FILTR KOŃCA: Ochrona rudy i omijanie ścian
+                                        end_env = self.bot_memory[my_id].get(end_pos, ct.get_tile_env(end_pos) if ct.is_in_vision(end_pos) else Environment.EMPTY)
+                                        if end_env in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE, Environment.WALL]:
+                                            continue
+                                        
+                                        if d_core < min_dist_to_core:
+                                                min_dist_to_core = d_core
+                                                best_start = start_pos
+                                                best_end = end_pos
+                        
+                        # --- FAZA WYKONANIA ---
+                        if best_start and best_end:
+                            
+                            # SYTUACJA 1: Bot stoi centralnie na polu, z którego chce zacząć budować most
+                            if my_pos == best_start:
+                                # Musimy z niego zejść! Robimy krok obok (najlepiej w kierunku końca mostu)
+                                step_dir = my_pos.direction_to(best_end)
+                                if ct.can_move(step_dir):
+                                    ct.move(step_dir)
+                                    self.bot_paths[my_id] = [] # Resetujemy A*, żeby system ruchu nas nie cofnął
+                                # (W tej turze zużyliśmy cooldown na ruch, wyburzanie i budowa w następnej)
+
+                            # SYTUACJA 2: Bot stoi idealnie, obok pola startowego (odległość 1)
+                            elif my_pos.distance_squared(best_start) <= 2:
+                                
+                                # KROK A: Czyszczenie terenu (DARMOWA AKCJA)
+                                # Jeśli na polu jest nasza droga (lub cokolwiek sojuszniczego), wyburzamy to
+                                if ct.can_destroy(best_start):
+                                    ct.destroy(best_start)
+                                
+                                # KROK B: Właściwa budowa mostu (W TEJ SAMEJ TURZE)
+                                if ct.get_action_cooldown() == 0:
+                                    if ct.can_build_bridge(best_start, best_end):
+                                        ct.build_bridge(best_start, best_end)
+                                        self.last_bridge_node[my_id] = best_end
+                                        self.bot_targets[my_id] = best_end
+                                    else:
+                                        pass
+
+                            # SYTUACJA 3: Bot jest za daleko
+                            else:
+                                # Ustawiamy mu cel na best_start. Nasz system ruchu w Sekcji 3 wyłapie
+                                # is_building = True i grzecznie zatrzyma bota DOKŁADNIE krok przed celem.
+                                self.bot_targets[my_id] = best_start
+                                
+                        else:
+                            # Kompletny ślepy zaułek - z żadnej strony węzła nie da się pociągnąć mostu.
+                            self.bot_states[my_id] = BotState.EXPLORE
+                            self.bot_targets[my_id] = None
+
+                
 
 
             # ==========================================
@@ -566,7 +657,7 @@ class Player:
                     pass
 
             # Czy bot idzie budować kopalnię?
-            is_building = (self.bot_states[my_id] == BotState.BUILD_MINE)
+            is_building = (self.bot_states[my_id] in [BotState.BUILD_MINE, BotState.BUILD_BELT])
 
             # HAMULEC: Zatrzymujemy się krok przed celem TYLKO, gdy idziemy budować.
             # Zwiadowcy muszą wejść na sam punkt, żeby go zresetować!
@@ -594,7 +685,7 @@ class Player:
                                 # Twarda przeszkoda to: Ściana/Ruda ALBO budynek, który NIE JEST markerem i po którym nie da się chodzić
                                 is_hard_obstacle = (memory_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or 
                                                 (env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] and memory_env is None) or 
-                                                (b_id is not None and b_type not in passable_b_types and not can_walk_on_enemy and not is_allied_core))
+                                                (b_id is not None and b_type not in passable_types and not can_walk_on_enemy and not is_allied_core))
                             
                             if not is_hard_obstacle and not out_of_bounds:
                                 self.bot_paths[my_id] = [greedy_dir]
