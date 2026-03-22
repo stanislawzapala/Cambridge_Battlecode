@@ -532,7 +532,7 @@ class Player:
             # Aktualizujemy rejestr
             self.enemy_roads_near_core = current_enemy_roads
 
-            # C) PRODUKCJA BOTÓW — łącznie 10, tylko w turach podzielnych przez 3
+            # C) PRODUKCJA BOTÓW — łącznie 5, tylko w turach podzielnych przez 3
             # PLUS awaryjny spawn zamiennika gdy wykryto zniszczoną wrogą drogę
             # PLUS boty specjalne od tury 400 co 12 tur
             if ct.get_action_cooldown() == 0:
@@ -547,7 +547,7 @@ class Player:
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
                         self.bot_late_spawn_index += 1
-                elif self.spawned_bots_count < 10 and current_round % 3 == 0:
+                elif self.spawned_bots_count < 5 and current_round % 3 == 0:
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
