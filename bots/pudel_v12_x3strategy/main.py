@@ -533,6 +533,7 @@ class Player:
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW — łącznie 5, tylko w turach podzielnych przez 3
+            number_of_bots_to_spawn = min(4,map_height*map_width // 400) # dostosowujemy skalę spawnu do wielkości mapy, żeby nie zalać jej botami na dużych mapach
             # PLUS awaryjny spawn zamiennika gdy wykryto zniszczoną wrogą drogę
             # PLUS boty specjalne od tury 400 co 12 tur
             if ct.get_action_cooldown() == 0:
@@ -547,7 +548,7 @@ class Player:
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
                         self.bot_late_spawn_index += 1
-                elif self.spawned_bots_count < 5 and current_round % 3 == 0:
+                elif self.spawned_bots_count < number_of_bots_to_spawn and current_round % 3 == 0:
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
