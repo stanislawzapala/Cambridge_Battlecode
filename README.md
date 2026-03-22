@@ -12,6 +12,20 @@ Cambridge Battlecode challenge
 ## To do list
 - pozamieniać self.słowniki na self.wartości. np self.bots_id. bo obecnie jest tak, jakby miały współdzieloną pamięć
 - obecnie markery spamią się z dowolną informacją o wrogiej strukturze - czyli też o drodze. a wolelibyśmy priorytetyzować informacje o ważniejszych budynkach lub o złożach.
+- Brak bezpośredniego ataku na Core wroga
+Strategia skupia się wyłącznie na ekonomii i defensywie. Żaden bot nigdy nie idzie w stronę wrogiego Core — nawet gdy jest znany z VIP Facts. Można by dodać typ bota (np. jako 5. w rotacji po turze 400, albo jako upgrade KAMIKAZE gdy brak wrogich Harvesterów) który próbuje dotrzeć do Core wroga i dokonuje autodestrukcji na nim lub jego bezpośrednim otoczeniu. Nawet 20 DMG z jednego bota skumulowane przez kilka takich ataków może być istotne pod koniec gry.
+- KAMIKAZE nie przejmuje złoża po ataku
+Po postawieniu Sentinela KAMIKAZE od razu staje się REPAIRMAN — bez czekania na zniszczenie Harvestera i bez próby przejęcia złoża. Brakuje logiki oblężenia: postaw drogę na złożu jako blokadę → poczekaj → zbuduj nasz Harvester. To zwłaszcza boli, bo Sentinel jest już na miejscu i prawie na pewno zniszczy Harvestera — a złoże zostaje niezagospodarowane.
+- Smelter niszczy infrastrukturę bez sprawdzenia surowców przy podłączaniu
+W fazie connect, gdy src_pos.distance_squared(fpos) <= 9, Smelter po prostu robi ct.destroy(src_pos) i próbuje postawić Most. Jeśli Most się nie uda (brak surowców), element sieci jest trwale zniszczony. Brak analogicznej do fazy build ochrony "destroy tylko gdy stać".
+- FORTIFIER nie ma trybu oblężenia przy wrogich Harvesterach
+Gdy Fortifier wyczerpie miejsca na Sentinele przy wrogim Harvesterze, po prostu szuka nowego celu. Tymczasem Sentinele które właśnie postawił prawie na pewno zniszczą Harvestera — i złoże zostaje puste, gotowe do przejęcia przez wroga lub przez nas. Brak mechanizmu czekania i budowy własnego Harvestera na uwolnionym złożu.
+- Smelter nie monitoruje Foundry po zakończeniu budowy
+Po fazie fortify Smelter zostaje REPAIRMAN i nigdy więcej nie wraca do Foundry. Jeśli Foundry zostanie zniszczone lub odcięte od surowców (np. wróg przerwie Conveyor wejściowy), nikt tego nie zauważy i nie odbuduje. Brakuje fazy watch — ciągłego monitorowania przez jednego dedykowanego Smeltera.
+- Brak koordynacji przy wielu botach ciągnących do tego samego Splittera
+Gdy kilka botów jednocześnie jest w BUILD_BELT i każdy celuje w ten sam Splitter, mogą wzajemnie nadpisywać sobie Conveyory lub budować równoległe, niepotrzebne nitki do jednego punktu. Mechanizm rezerwacji (kanał 1) działa tylko dla złóż — nie dla punktów docelowych sieci. Splitter który już jest zasilany mógłby być oznaczony jako "zajęty" przez marker, żeby kolejne boty szukały innego wejścia.
+- Brak użycia Armoured Conveyor i Barrier
+ARMOURED_CONVEYOR (odporny na uszkodzenia) i BARRIER (czysto defensywny) są zdefiniowane w kodzie ale nigdy nie są budowane. Odcinki sieci blisko linii frontu (np. w pobliżu wrogich Sentineli lub Gunnerów) mogłyby być budowane z Armoured Conveyor zamiast zwykłego — szczególnie gdy Repairman wykryje ciągłe uszkodzenia w tym samym miejscu.
 
 
 ## Podpatrzone taktyki:
