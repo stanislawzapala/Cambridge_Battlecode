@@ -2236,12 +2236,12 @@ class Player:
                                     if ct.is_in_vision(cand):
                                         for d_feed in ORTHOGONAL_DIRECTIONS:
                                             feed_pos = cand.add(d_feed)
-                                            if not ct.is_in_vision(feed_pos):
-                                                continue
                                             # --- POPRAWKA: Zabezpieczenie przed wyjściem poza mapę ---
                                             if not (0 <= feed_pos.x < map_width and 0 <= feed_pos.y < map_height):
                                                 continue
                                             # ----------------------------------------------------------
+                                            if not ct.is_in_vision(feed_pos):
+                                                continue
                                             b_id_feed = ct.get_tile_building_id(feed_pos)
                                             if b_id_feed is None:
                                                 continue
@@ -2381,6 +2381,8 @@ class Player:
                                             for d_feed in ORTHOGONAL_DIRECTIONS:
                                                 feed_pos = end_pos.add(d_feed)
                                                 if not ct.is_in_vision(feed_pos):
+                                                    continue
+                                                if not (0 <= feed_pos.x < map_width and 0 <= feed_pos.y < map_height):
                                                     continue
                                                 b_id_feed = ct.get_tile_building_id(feed_pos)
                                                 if b_id_feed is None:
