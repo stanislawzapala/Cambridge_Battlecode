@@ -132,7 +132,6 @@ class Player:
         """
         Zwraca listę kierunków za pomocą optymistycznego Frontier A* (Frontier A-Star). 
         Możemy ustawić stop_adjacent=True, jeśli chcemy, żeby bot zatrzymał się na polu obok celu (przydatne np. do budowania).
-        Możemy dodać blocked_directions, czyli listę kierunków, których bot ma unikać.
         """
         
         # Kolejka priorytetowa: trzyma krotki (priorytet, koszt_do_tej_pory, x, y, pozycja)
@@ -250,7 +249,10 @@ class Player:
 
     
     def can_walk_on_building(self, b_id: int, my_team: Team, ct: Controller) -> bool:
-        """Sprawdza, czy można chodzić po budynku wroga (droga/taśmociąg/pancerna taśma)."""
+        """
+        Sprawdza, czy można chodzić po budynku wroga (droga/taśmociąg/pancerna taśma).
+        Nie bierze pod uwagę obecności probki.
+        """
         if b_id is None:
             return False
         b_type = ct.get_entity_type(b_id)
@@ -422,9 +424,11 @@ class Player:
         return False
 
     def _place_claim_marker_near_ore(self, ct: Controller, my_id: int, my_team, ore_pos: Position, current_round: int, forbidden_tiles: set) -> None:
-        """Stawia marker-rezerwację złoża. Najpierw próbuje na samym polu złoża,
+        """
+        Stawia marker-rezerwację złoża. Najpierw próbuje na samym polu złoża,
         potem na sąsiednich polach. Może zniszczyć blokujący marker (nasz lub wrogi)
-        albo naszą drogę. Marker koduje pozycję złoża w kanale 1."""
+        albo naszą drogę. Marker koduje pozycję złoża w kanale 1.
+        """
         map_width = ct.get_map_width()
         map_height = ct.get_map_height()
 
@@ -464,7 +468,7 @@ class Player:
                 ct.place_marker(nb, self.pack_claim_marker(current_round, ore_pos))
                 return
 
-    def run(self, ct: Controller) -> None:
+    def run(self, ct: Controller) -> None: # type: ignore
         # Current round (for memory timestamping)
         current_round = ct.get_current_round()
         
@@ -533,7 +537,7 @@ class Player:
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW — łącznie 5, tylko w turach podzielnych przez 3
-            number_of_bots_to_spawn = min(4,map_height*map_width // 400) # dostosowujemy skalę spawnu do wielkości mapy, żeby nie zalać jej botami na dużych mapach
+            number_of_bots_to_spawn = max(4, map_height*map_width // 400) # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
             # PLUS awaryjny spawn zamiennika gdy wykryto zniszczoną wrogą drogę
             # PLUS boty specjalne od tury 400 co 12 tur
             if ct.get_action_cooldown() == 0:
@@ -941,7 +945,7 @@ class Player:
 
             # PO TURZE 400: istniejące boty (spawnione przed 400) przechodzą w REPAIRMAN
             # — ale tylko gdy są w stanach "wolnych" (nie przerywamy aktywnych misji)
-            IDLE_STATES = {BotState.EXPLORE, BotState.SCOUT, BotState.ROAD_LAYER}
+            IDLE_STATES = {BotState.SCOUT, BotState.ROAD_LAYER} # był też BotState.EXPLORE, testowo go wyciągnąłem
             if (current_round >= 400
                     and current_state in IDLE_STATES
                     and self.bot_spawn_round.get(my_id, 0) < 400):
@@ -2234,6 +2238,10 @@ class Player:
                                             feed_pos = cand.add(d_feed)
                                             if not ct.is_in_vision(feed_pos):
                                                 continue
+                                            # --- POPRAWKA: Zabezpieczenie przed wyjściem poza mapę ---
+                                            if not (0 <= feed_pos.x < map_width and 0 <= feed_pos.y < map_height):
+                                                continue
+                                            # ----------------------------------------------------------
                                             b_id_feed = ct.get_tile_building_id(feed_pos)
                                             if b_id_feed is None:
                                                 continue
@@ -2266,17 +2274,57 @@ class Player:
 
                                 # Przypadek B: cand to istniejący element sieci (conveyor/most)
                                 # NIE Core, NIE Splitter (już obsłużony)
+                                # elif cand not in self.allied_core_tiles and is_existing_network(cand):
+                                #     if not (cand_dist < src_dist):  # progress guard
+                                #         continue
+                                #     score = 1
+                                #     if score < best_score:
+                                #         best_score = score
+                                #         build_pos = source
+                                #         build_target = d
+                                #         build_mode = 'conveyor'
+                                #         build_is_network = True
+
+                                
+                                # Przypadek B: cand to istniejący element sieci (conveyor/most)
                                 elif cand not in self.allied_core_tiles and is_existing_network(cand):
                                     if not (cand_dist < src_dist):  # progress guard
                                         continue
-                                    score = 1
+
+                                    # --- LOGIKA: LOCAL COLLECTOR vs LONG HAUL ---
+                                    # 1. Faza dostawy: Jesteśmy blisko bazy (np. promień 6 kratek -> dist_sq <= 36) -> ZEZWALAJ
+                                    is_near_base = (cand_dist <= 36)
+                                    
+                                    # 2. Faza zbierania: Bot ledwie ruszył spod swojego harvestera (np. <= 5 kratek) -> ZEZWALAJ
+                                    # (łączy się z sąsiadami tworząc lokalny węzeł zrzutowy)
+                                    current_chain_length = len(self.belt_chain.get(my_id, set()))
+                                    is_just_starting = (current_chain_length <= 5)
+                                    
+                                    # 3. Faza autostrady: Jesteśmy daleko od harvestera i daleko od bazy -> ZAKAZ
+                                    if not (is_near_base or is_just_starting):
+                                        continue  # Przerywamy analizę tego kandydata, wymuszając budowę nowej klatki taśmociągu (Przypadek C)
+                                        
+                                    # --- DETEKCJA ZATORÓW (wspierająca) ---
+                                    is_clogged = False
+                                    try:
+                                        b_id_cand = ct.get_tile_building_id(cand)
+                                        # Jeśli na kandydującej taśmie fizycznie leży ruda w tym momencie, 
+                                        # jest duża szansa, że taśma nie ma optymalnego flow
+                                        if b_id_cand and ct.get_stored_resource(b_id_cand) is not None:
+                                            is_clogged = True
+                                    except Exception:
+                                        pass
+
+                                    # Jeśli jest zator, damy gorszy score, więc bot chętniej przedłuży
+                                    # własną taśmę, omijając korek, jeśli ma wolne pole.
+                                    score = 10 if is_clogged else 1
+                                        
                                     if score < best_score:
                                         best_score = score
                                         build_pos = source
                                         build_target = d
                                         build_mode = 'conveyor'
                                         build_is_network = True
-
                                 # Przypadek C: wolne pole — krok pośredni
                                 # NIE Core ani near_core_tiles jako cel
                                 elif (cand not in self.allied_core_tiles
