@@ -1,6 +1,14 @@
 # Packages
 # 1. Official
-from cambc import Controller, Direction, EntityType, Environment, Position, Team, ResourceType
+from cambc import (
+    Controller, Direction, EntityType, Environment, Position, Team, ResourceType,
+    # Tu dopisujesz stałe kosztów:
+    CONVEYOR_BASE_COST, SPLITTER_BASE_COST, BRIDGE_BASE_COST,
+    ARMOURED_CONVEYOR_BASE_COST, HARVESTER_BASE_COST, ROAD_BASE_COST,
+    BARRIER_BASE_COST, GUNNER_BASE_COST, SENTINEL_BASE_COST,
+    BREACH_BASE_COST, LAUNCHER_BASE_COST, FOUNDRY_BASE_COST,
+    BUILDER_BOT_BASE_COST
+)
 # 2. For random movement (for testing purposes)
 import random
 # 3. For priority queue (if we later want to implement A*)
@@ -373,23 +381,38 @@ class Player:
         return new_priority > existing_priority
 
     def _can_afford_build(self, ct: Controller, build_mode: str) -> bool:
-        """Sprawdza czy drużyna ma surowce na zbudowanie conveyor/bridge/sentinel
-        z uwzględnieniem aktualnego mnożnika kosztów."""
-        titanium, axionite = ct.get_global_resources()
+        """
+        Sprawdza czy drużyna ma surowce na zbudowanie budynku,
+        używając zewnętrznych stałych kosztów.
+        """
+        cost_mapping = {
+            'conveyor': CONVEYOR_BASE_COST,
+            'splitter': SPLITTER_BASE_COST,
+            'bridge': BRIDGE_BASE_COST,
+            'armoured_conveyor': ARMOURED_CONVEYOR_BASE_COST,
+            'harvester': HARVESTER_BASE_COST,
+            'road': ROAD_BASE_COST,
+            'barrier': BARRIER_BASE_COST,
+            'gunner': GUNNER_BASE_COST,
+            'sentinel': SENTINEL_BASE_COST,
+            'breach': BREACH_BASE_COST,
+            'launcher': LAUNCHER_BASE_COST,
+            'foundry': FOUNDRY_BASE_COST,
+            'builder_bot': BUILDER_BOT_BASE_COST
+        }
+
+        # Pobieramy aktualne zasoby i mnożnik
+        titanium_owned, axionite_owned = ct.get_global_resources()
         scale = ct.get_scale_percent() / 100.0
-        if build_mode == 'conveyor':
-            # Conveyor: 3 Ti bazowo
-            cost_ti = int(scale * 3)
-            return titanium >= cost_ti
-        elif build_mode == 'bridge':
-            # Bridge: 10 Ti bazowo
-            cost_ti = int(scale * 10)
-            return titanium >= cost_ti
-        elif build_mode == 'sentinel':
-            # Sentinel: 15 Ti bazowo
-            cost_ti = int(scale * 15)
-            return titanium >= cost_ti
-        return True
+        
+        # Wyciągamy bazowe wartości z krotki przypisanej do danego trybu
+        base_ti, base_ax = cost_mapping[build_mode]
+
+        # Obliczamy realny koszt (rzutowanie na int, bo koszty są zazwyczaj całkowite)
+        cost_ti = int(base_ti * scale)
+        cost_ax = int(base_ax * scale)
+
+        return titanium_owned >= cost_ti and axionite_owned >= cost_ax
 
     def _ore_already_claimed_by_other(self, ct: Controller, my_id: int, my_team, ore_pos: Position, current_round: int) -> bool:
         """Zwraca True jeśli złoże jest już obsługiwane przez innego bota:
