@@ -1,20 +1,20 @@
 # Packages
 # 1. Official
-from cambc import Controller, Direction, EntityType, Environment, Position, Team, ResourceType
-# 2. Koszty bazowe budynków (wartości: Tytan, Axionite) -
-CONVEYOR_BASE_COST = (3, 0)
-SPLITTER_BASE_COST = (6, 0)
-BRIDGE_BASE_COST = (20, 0)
-ARMOURED_CONVEYOR_BASE_COST = (10, 5)
-HARVESTER_BASE_COST = (80, 0)
-ROAD_BASE_COST = (1, 0)
-BARRIER_BASE_COST = (3, 0)
-GUNNER_BASE_COST = (10, 0)
-SENTINEL_BASE_COST = (15, 0)
-BREACH_BASE_COST = (30, 10)
-LAUNCHER_BASE_COST = (20, 0)
-FOUNDRY_BASE_COST = (120, 0)
-BUILDER_BOT_BASE_COST = (50, 0)
+from cambc import Controller, Direction, EntityType, Environment, Position, Team, ResourceType, GameConstants
+# 2. Koszty bazowe budynków (wartości dynamicznie pobierane z silnika gry)
+CONVEYOR_BASE_COST = GameConstants.CONVEYOR_BASE_COST
+SPLITTER_BASE_COST = GameConstants.SPLITTER_BASE_COST
+BRIDGE_BASE_COST = GameConstants.BRIDGE_BASE_COST
+ARMOURED_CONVEYOR_BASE_COST = GameConstants.ARMOURED_CONVEYOR_BASE_COST
+HARVESTER_BASE_COST = GameConstants.HARVESTER_BASE_COST
+ROAD_BASE_COST = GameConstants.ROAD_BASE_COST
+BARRIER_BASE_COST = GameConstants.BARRIER_BASE_COST
+GUNNER_BASE_COST = GameConstants.GUNNER_BASE_COST
+SENTINEL_BASE_COST = GameConstants.SENTINEL_BASE_COST
+BREACH_BASE_COST = GameConstants.BREACH_BASE_COST
+LAUNCHER_BASE_COST = GameConstants.LAUNCHER_BASE_COST
+FOUNDRY_BASE_COST = GameConstants.FOUNDRY_BASE_COST
+BUILDER_BOT_BASE_COST = GameConstants.BUILDER_BOT_BASE_COST
 # 2. For random movement (for testing purposes)
 import random
 # 3. For priority queue (if we later want to implement A*)
@@ -570,8 +570,8 @@ class Player:
                         ct.spawn_builder(spawn_pos)
                         self.replacement_bots_pending -= 1
                         self.spawned_bots_count += 1
-                elif current_round >= 300 and (current_round - 300) % 12 == 0 and self.spawned_bots_count < 15:
-                    # Bot specjalny — typ wyznaczany przez numer iteracji modulo 4
+                elif current_round >= 300 and (current_round - 300) % 12 == 0 and self.spawned_bots_count < 20:
+                    # Bot specjalny — typ wyznaczany przez numer iteracji modulo 5
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
@@ -675,8 +675,8 @@ class Player:
                     self.bot_state = BotState.ROAD_LAYER
                 elif current_round >= 300:
                     # Typ bota wyznaczany z tury spawnu modulo 4 (bez pamięci współdzielonej)
-                    type_index = ((current_round - 300) // 12) % 4
-                    late_states = [BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER]
+                    type_index = ((current_round - 300) // 12) % 5
+                    late_states = [BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
                     self.bot_state = late_states[type_index]
                 else:
                     self.bot_state = BotState.EXPLORE
