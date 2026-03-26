@@ -1847,7 +1847,7 @@ class Player:
 
             elif current_state == BotState.EXPLORE:
                 found_ore_pos = None
-                if not self.target or current_round % 5 == 0:
+                if not self.target or current_round % 2 == 0: # było co 5
                     # Szuka pustej rudy, pomijając złoża zarezerwowane przez innych botów
                     # (rezerwacja ważna przez 20 tur od ostatniego odczytu markera).
                     CLAIM_TTL = 20
