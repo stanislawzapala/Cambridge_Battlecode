@@ -2,7 +2,6 @@
 # 1. Official
 from cambc import (
     Controller, Direction, EntityType, Environment, Position, Team, ResourceType,
-    # Tu dopisujesz stałe kosztów:
     CONVEYOR_BASE_COST, SPLITTER_BASE_COST, BRIDGE_BASE_COST,
     ARMOURED_CONVEYOR_BASE_COST, HARVESTER_BASE_COST, ROAD_BASE_COST,
     BARRIER_BASE_COST, GUNNER_BASE_COST, SENTINEL_BASE_COST,
@@ -62,78 +61,70 @@ passable_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONV
 
 class Player:
     def __init__(self):
-        # CORE
-        self.spawned_bots_count = 0
-        self.starting_protocol = False
-        self.core_facts_to_report = []
-        
-        # MAPA BAZY (Rdzeń + otoczenie)
+        # ---DANE WSPÓLNE DLA DRUŻYNY ---
         self.allied_core_tiles: set[Position] = set()
-        # Pola Splitterów wokół bazy (dodatkowe cele dla wyjść mostów)
         self.allied_splitter_tiles: set[Position] = set()
-
-        # PROBES (Builder Bot)
-        # PAMIĘĆ DLA BOTÓW
-        # Kluczem w słowniku będzie ID bota (int)
-        self.bot_targets: dict[int, Position | None] = {}
-        self.bot_paths: dict[int, list[Direction]] = {}
-
-        # Pamięć Topograficzna (Niezmienna)
-        self.bot_memory: dict[int, dict[Position, Environment]] = {}
+        self.enemy_roads_near_core: set[Position] = set()
         
-        # Pamięć Taktyczna (Dynamiczna) - (Typ Budynku, Drużyna, Ostatnio Widziane w Turze)
-        # Typ i Drużyna mogą być None, jeśli pole jest aktualnie puste.
-        self.bot_buildings: dict[int, dict[Position, tuple[EntityType | None, Team | None, int]]] = {}
+        # CORE
+        self.spawned_bots_count: int = 0
+        self.starting_protocol: bool = False
+        self.core_facts_to_report: list = []
+        self.replacement_bots_pending: int = 0
+        self.bot_late_spawn_index: int = 0
         
+        # --- PAMIĘĆ PROBKI ---
+        self.memory: dict[int, dict[Position, Environment]] = {}
+        self.buildings: dict[int, dict[Position, tuple[EntityType | None, Team | None, int]]] = {}
         # Lista VIP: słownik (pos -> (env, b_type, is_enemy)) dla każdego bota
-        self.vip_facts: dict[int, dict[Position, tuple[Environment, EntityType | None, bool]]] = {}
+        self.vip_facts: dict[Position, tuple[Environment, EntityType | None, bool]] = {}
+        # ore_pos → tura ostatniej rezerwacji odczytanej z markera
+        self.claimed_ores: dict[Position, int] = {}
 
-        # Maszyna Stanów: W jakim trybie jest obecnie dany bot?
-        self.bot_states: dict[int, BotState] = {}
+        # --- STAN I RUCH ---
+        self.bot_state: BotState | None = None
+        self.target: Position | None = None
+        self.path: list[Direction] = []
+        self.spawn_round: int | None = None
+        
+        # --- WYDOBYCIE ---
+        # Złoże które dany bot aktualnie obsługuje (BUILD_MINE / BUILD_BELT)
+        self.assigned_ore: Position | None = None
+        # Tura wejścia w BUILD_MINE — do bezpiecznika timeout
+        self.mine_since: int | None = None
 
+        # --- BUDOWANIE ---
         # Węzeł, od którego bot aktualnie buduje sieć mostów
-        self.last_bridge_node: dict[int, Position] = {}
+        self.last_bridge_node: Position | None = None
         # Historia węzłów bieżącej nitki mostów (do wykrywania pętli)
-        self.belt_chain: dict[int, set[Position]] = {}
+        self.belt_chain: set[Position] = set()
         # Pole Splittera do zbudowania w następnej turze po wylądowaniu mostu
         # (bot nie może zbudować mostu i Splittera w tej samej turze)
-        self.pending_splitter: dict[int, tuple[Position, Direction] | None] = {}
+        self.pending_splitter: tuple[Position, Direction] | None = None
         # Licznik tur bez postępu w BUILD_BELT — po 3 turach porzucamy budowę
-        self.bot_belt_stuck: dict[int, int] = {}
+        self.belt_stuck_counter: int | None = None
+        
+        # --- BEZPIECZNIKI RUCHU ---
         # Tura w której ustawiono aktualny cel ruchu; reset po 60 turach bez dotarcia
-        self.bot_target_since: dict[int, int] = {}
-        self.bot_target_last: dict[int, Position | None] = {}
-        # Tura spawnu każdego bota (do identyfikacji wczesnych botów ROAD_LAYER)
-        self.bot_spawn_round: dict[int, int] = {}
-        # Rezerwacje złóż widziane przez każdego bota:
-        # ore_pos → tura ostatniej rezerwacji odczytanej z markera
-        self.claimed_ores: dict[int, dict[Position, int]] = {}
-        # Złoże które dany bot aktualnie obsługuje (BUILD_MINE / BUILD_BELT)
-        self.bot_claimed_ore: dict[int, Position | None] = {}
-        # Tura wejścia w BUILD_MINE — do bezpiecznika timeout
-        self.bot_mine_since: dict[int, int] = {}
-        # Rejestr wrogich dróg bezpośrednio przylegających do core (do wykrywania zniszczeń)
-        self.enemy_roads_near_core: set[Position] = set()
-        # Liczba zamienników oczekujących na spawn (znikające drogi = sygnał)
-        self.replacement_bots_pending: int = 0
-        # Licznik botów spawnionych po turze 400 (do wyznaczania typu modulo 4)
-        self.bot_late_spawn_index: int = 0
-        # Stany wewnętrzne nowych typów botów
+        self.target_since: int | None = None
+        self.target_last: Position | None = None
+        
+        # --- SPECJALNE STANY ---
         # KAMIKAZE: zapamiętana pozycja i kierunek sentinela do zbudowania
-        self.kamikaze_sentinel_pos: dict[int, Position | None] = {}
-        self.kamikaze_sentinel_dir: dict[int, Direction | None] = {}
+        self.kamikaze_sentinel_pos: Position | None = None
+        self.kamikaze_sentinel_dir: Direction | None = None
         # FORTIFIER: aktualnie obudowywany harvester
-        self.fortifier_harvest_target: dict[int, Position | None] = {}
+        self.fortifier_harvest_target: Position | None = None
         # REPAIRMAN: śledzenie HP i reagowanie na obrażenia
         self.repairman_prev_hp: dict[int, int] = {}          # HP z poprzedniej tury
         self.repairman_danger_pos: dict[int, Position | None] = {}  # gdzie dostał obrażenia
         self.repairman_flee_turns: dict[int, int] = {}       # ile tur jeszcze ucieka
         self.repairman_markers_placed: dict[int, int] = {}   # ile markerów alarmowych postawił
         # SMELTER: faza pracy ('scan'|'build'|'connect') i zapamiętana lokalizacja foundry
-        self.smelter_phase: dict[int, str] = {}
-        self.smelter_foundry_pos: dict[int, Position | None] = {}
-        self.smelter_titanium_src: dict[int, Position | None] = {}
-        self.smelter_axionite_src: dict[int, Position | None] = {}
+        self.smelter_phase: str | None = None
+        self.smelter_foundry_pos:  Position | None = None
+        self.smelter_titanium_src: Position | None = None
+        self.smelter_axionite_src: Position | None = None
        
 
     def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False) -> list[Direction] | None:
@@ -559,7 +550,7 @@ class Player:
             # Aktualizujemy rejestr
             self.enemy_roads_near_core = current_enemy_roads
 
-            # C) PRODUKCJA BOTÓW — łącznie 5, tylko w turach podzielnych przez 3
+            # C) PRODUKCJA BOTÓW 
             number_of_bots_to_spawn = max(4, map_height*map_width // 400) # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
             # PLUS awaryjny spawn zamiennika gdy wykryto zniszczoną wrogą drogę
             # PLUS boty specjalne od tury 400 co 12 tur
