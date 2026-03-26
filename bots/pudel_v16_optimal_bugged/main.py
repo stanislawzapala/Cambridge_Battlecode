@@ -1842,7 +1842,7 @@ class Player:
                     self.target = found_ore_pos
                     self.path = []
                     self.assigned_ore = found_ore_pos
-                    self.bot_mine_since = current_round
+                    self.mine_since = current_round
                         
                 # Jeśli nadal eksploruje i nie ma celu (lub dotarł do celu), losuje nowy.
                 # Wyjątek: jeśli cel jest polem Core, bot jest tam żeby zbudować Splitter
@@ -1887,7 +1887,7 @@ class Player:
                     at_ore = my_pos.distance_squared(target_pos) <= 2
 
                     # 0b. TIMEOUT: jeśli nie dotarliśmy do złoża przez 60 tur — porzucamy
-                    if not at_ore and (current_round - self.bot_mine_since) >= 60:
+                    if not at_ore and (current_round - self.mine_since) >= 60:
                         self.bot_state = BotState.EXPLORE
                         self.target = None
                         self.path = []
@@ -2031,7 +2031,7 @@ class Player:
                         (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
                     ]
                     for ddx, ddy, _ in KNIGHT_OFFSETS_DELIVERY:
-                        sp_candidate = Position(core_cx + ddx, core_cy + ddy)
+                        sp_candidate = Position(cx + ddx, cy + ddy)
                         if not (0 <= sp_candidate.x < map_width and 0 <= sp_candidate.y < map_height):
                             continue
                         sp_env = self.memory.get(
@@ -2121,7 +2121,7 @@ class Player:
                     ]
                     splitter_input_map = {}  # splitter_pos → input_pos
                     for ddx, ddy, sp_faces in KNIGHT_OFFSETS_SP:
-                        sp = Position(core_cx + ddx, core_cy + ddy)
+                        sp = Position(cx + ddx, cy + ddy)
                         if sp in self.allied_splitter_tiles:
                             splitter_input_map[sp] = sp.add(sp_faces.opposite())
 
@@ -2463,7 +2463,7 @@ class Player:
                                     (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
                                     (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
                                 ]:
-                                    if last_node == Position(core_cx + ddx, core_cy + ddy):
+                                    if last_node == Position(cx + ddx, cy + ddy):
                                         self.pending_splitter = (last_node, sp_faces)
                                         break
                         # Jeśli nie w zasięgu wzroku — czekamy aż będzie widać
@@ -2599,7 +2599,7 @@ class Player:
                                                         (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
                                                         (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
                                                     ]:
-                                                        if conv_output == Position(core_cx + ddx, core_cy + ddy):
+                                                        if conv_output == Position(cx + ddx, cy + ddy):
                                                             self.pending_splitter = (conv_output, sp_faces)
                                                             break
                                         else:  # bridge
@@ -2625,7 +2625,7 @@ class Player:
                                                         (-1, -2, Direction.SOUTH),
                                                     ]
                                                     for ddx, ddy, faces in knight_offsets:
-                                                        if build_target == Position(sp_cx + ddx, sp_cy + ddy):
+                                                        if build_target == Position(cx + ddx, cy + ddy):
                                                             self.pending_splitter = (build_target, faces)
                                                             break
 
