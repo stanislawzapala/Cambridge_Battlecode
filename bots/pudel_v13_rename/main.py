@@ -1,13 +1,20 @@
 # Packages
 # 1. Official
-from cambc import (
-    Controller, Direction, EntityType, Environment, Position, Team, ResourceType,
-    CONVEYOR_BASE_COST, SPLITTER_BASE_COST, BRIDGE_BASE_COST,
-    ARMOURED_CONVEYOR_BASE_COST, HARVESTER_BASE_COST, ROAD_BASE_COST,
-    BARRIER_BASE_COST, GUNNER_BASE_COST, SENTINEL_BASE_COST,
-    BREACH_BASE_COST, LAUNCHER_BASE_COST, FOUNDRY_BASE_COST,
-    BUILDER_BOT_BASE_COST
-)
+from cambc import Controller, Direction, EntityType, Environment, Position, Team, ResourceType
+# 2. Koszty bazowe budynków (wartości: Tytan, Axionite) -
+CONVEYOR_BASE_COST = (3, 0)
+SPLITTER_BASE_COST = (6, 0)
+BRIDGE_BASE_COST = (20, 0)
+ARMOURED_CONVEYOR_BASE_COST = (10, 5)
+HARVESTER_BASE_COST = (80, 0)
+ROAD_BASE_COST = (1, 0)
+BARRIER_BASE_COST = (3, 0)
+GUNNER_BASE_COST = (10, 0)
+SENTINEL_BASE_COST = (15, 0)
+BREACH_BASE_COST = (30, 10)
+LAUNCHER_BASE_COST = (20, 0)
+FOUNDRY_BASE_COST = (120, 0)
+BUILDER_BOT_BASE_COST = (50, 0)
 # 2. For random movement (for testing purposes)
 import random
 # 3. For priority queue (if we later want to implement A*)
@@ -125,6 +132,7 @@ class Player:
         self.smelter_foundry_pos:  Position | None = None
         self.smelter_titanium_src: Position | None = None
         self.smelter_axionite_src: Position | None = None
+
        
 
     def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False) -> list[Direction] | None:
@@ -543,13 +551,10 @@ class Player:
 
             # Drogi które były w rejestrze a teraz zniknęły = zniszczone (autodestrukcja bota)
             destroyed_roads = self.enemy_roads_near_core - current_enemy_roads
-            self.replacement_bots_pending += len(destroyed_roads)
-            # Aktualizujemy rejestr
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW 
             number_of_bots_to_spawn = max(4, map_height*map_width // 400) # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
-            # PLUS awaryjny spawn zamiennika gdy wykryto zniszczoną wrogą drogę
             # PLUS boty specjalne od tury 400 co 12 tur
             if ct.get_action_cooldown() == 0:
                 if self.replacement_bots_pending > 0:
@@ -825,7 +830,8 @@ class Player:
                     if enemy_road_blocks_sp:
                         # Wroga droga blokuje Splittera — wejdź na nią i dokonaj autodestrukcji
                         if my_pos == sp_pos:
-                            ct.self_destruct()
+                            if ct.can_fire(sp_pos):
+                                ct.fire(sp_pos)
                         else:
                             self.target = sp_pos
                             self.path = []
@@ -896,7 +902,8 @@ class Player:
                         # Droga przeciwnika blokuje — wejdź na nią i dokonaj autodestrukcji.
                         # Builder Bot zadaje 20 damage (droga ma 10 HP) — niszczy ją.
                         if my_pos == sn_pos:
-                            ct.self_destruct()  # kończy wykonanie natychmiast
+                            if ct.can_fire(sn_pos):
+                                ct.fire(sn_pos)  # kończy wykonanie natychmiast
                         else:
                             # Idź dokładnie NA sn_pos (nie obok) — w każdym stanie
                             self.target = sn_pos
@@ -1169,9 +1176,10 @@ class Player:
                                     sentinel_placed = True
                                     break
                                 if not sentinel_placed:
-                                    # Brak miejsca na sentinela — wejdź na sieć wroga i self_destruct
+                                    # Brak miejsca na sentinela — wejdź na sieć wroga i atakuj
                                     if enemy_network_pos and my_pos == enemy_network_pos:
-                                        ct.self_destruct()
+                                        if ct.can_fire(enemy_network_pos):
+                                            ct.fire(enemy_network_pos)
                                     elif enemy_network_pos:
                                         self.target = enemy_network_pos
                                         self.path = []
@@ -1968,8 +1976,7 @@ class Player:
                                     ct.build_road(target_pos)
                                 self._place_claim_marker_near_ore(ct, my_id, my_team, target_pos, current_round, forbidden_tiles={my_pos, target_pos})
                                 self.path = []
-                        
-
+            
             elif current_state == BotState.BUILD_BELT:
                 # last_node = ostatni wybudowany element sieci (Harvester, conveyor lub most).
                 # Zadanie: poprowadzić sieć od last_node do Core (lub istniejącej sieci).
