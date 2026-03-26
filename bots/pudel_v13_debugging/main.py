@@ -74,8 +74,8 @@ class Player:
         self.bot_late_spawn_index: int = 0
         
         # --- PAMIĘĆ PROBKI ---
-        self.memory: dict[int, dict[Position, Environment]] = {}
-        self.buildings: dict[int, dict[Position, tuple[EntityType | None, Team | None, int]]] = {}
+        self.memory: dict[Position, Environment] = {}
+        self.buildings: dict[Position, tuple[EntityType | None, Team | None, int]] = {}
         # Lista VIP: słownik (pos -> (env, b_type, is_enemy)) dla każdego bota
         self.vip_facts: dict[Position, tuple[Environment, EntityType | None, bool]] = {}
         # ore_pos → tura ostatniej rezerwacji odczytanej z markera
@@ -102,11 +102,11 @@ class Player:
         # (bot nie może zbudować mostu i Splittera w tej samej turze)
         self.pending_splitter: tuple[Position, Direction] | None = None
         # Licznik tur bez postępu w BUILD_BELT — po 3 turach porzucamy budowę
-        self.belt_stuck_counter: int | None = None
+        self.belt_stuck_counter: int = 0
         
         # --- BEZPIECZNIKI RUCHU ---
         # Tura w której ustawiono aktualny cel ruchu; reset po 60 turach bez dotarcia
-        self.target_since: int | None = None
+        self.target_since: int = 0
         self.target_last: Position | None = None
         
         # --- SPECJALNE STANY ---
@@ -180,7 +180,7 @@ class Player:
                 # Jeśli jeszcze tu nie byliśmy ALBO znaleźliśmy tańszą/szybszą ścieżkę do tego pola
                 if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
                     
-                    memory_env = self.memory[bot_id].get(next_pos)
+                    memory_env = self.memory.get(next_pos)
                     if memory_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
                         continue # Pamiętamy, że tu jest mur lub ruda, omijamy!
                     
@@ -754,7 +754,7 @@ class Player:
                             # ORAZ dotyczy złoża innego niż nasze własne (nie blokujemy sami siebie).
                             ore_p = data['ore_pos']
                             ore_t = data['turn']
-                            if ore_p != self.bot_claimed_ore.get(my_id):
+                            if ore_p != self.assigned_ore:
                                 existing_claim = self.claimed_ores.get(ore_p, -1)
                                 if ore_t > existing_claim:
                                     self.claimed_ores[ore_p] = ore_t
@@ -935,7 +935,7 @@ class Player:
             IDLE_STATES = {BotState.SCOUT, BotState.ROAD_LAYER} # był też BotState.EXPLORE, testowo go wyciągnąłem
             if (current_round >= 400
                     and current_state in IDLE_STATES
-                    and self.bot_spawn_round.get(my_id, 0) < 400):
+                    and self.spawn_round < 400):
                 self.bot_state = BotState.REPAIRMAN
                 self.target = None
                 self.path = []
@@ -1211,7 +1211,7 @@ class Player:
 
                 # --- DETEKCJA OBRAŻEŃ ---
                 current_hp = ct.get_hp()
-                prev_hp = self.repairman_prev_hp.get(my_id, current_hp)
+                prev_hp = self.repairman_prev_hp
                 if current_hp < prev_hp:
                     # Otrzymaliśmy obrażenia — zapisz pozycję zagrożenia i uciekaj
                     self.repairman_danger_pos = my_pos
@@ -1222,7 +1222,7 @@ class Player:
                 self.repairman_prev_hp = current_hp
 
                 # --- TRYB UCIECZKI ---
-                flee_turns = self.repairman_flee_turns.get(my_id, 0)
+                flee_turns = self.repairman_flee_turns
                 if flee_turns > 0:
                     self.repairman_flee_turns = flee_turns - 1
                     danger_pos = self.repairman_danger_pos
@@ -1238,7 +1238,7 @@ class Player:
                             self.target = flee_target
                             self.path = []
                     # Postaw markery alarmowe przy core (do 3 markerów)
-                    markers_placed = self.repairman_markers_placed.get(my_id, 0)
+                    markers_placed = self.repairman_markers_placed
                     if markers_placed < 3 and danger_pos and ct.get_action_cooldown() == 0:
                         for adj_pos in ct.get_nearby_tiles(2):
                             if ct.can_place_marker(adj_pos):
@@ -1552,7 +1552,7 @@ class Player:
                 # ==========================================
                 # SMELTER: buduje Foundry i podłącza do sieci
                 # ==========================================
-                phase = self.smelter_phase.get(my_id, 'scan')
+                phase = self.smelter_phase
                 NETWORK_TYPES_S = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
                                    EntityType.BRIDGE, EntityType.SPLITTER}
 
@@ -1886,7 +1886,7 @@ class Player:
                     at_ore = my_pos.distance_squared(target_pos) <= 2
 
                     # 0b. TIMEOUT: jeśli nie dotarliśmy do złoża przez 60 tur — porzucamy
-                    if not at_ore and (current_round - self.bot_mine_since.get(my_id, current_round)) >= 60:
+                    if not at_ore and (current_round - self.bot_mine_since) >= 60:
                         self.bot_state = BotState.EXPLORE
                         self.target = None
                         self.path = []
@@ -1942,7 +1942,7 @@ class Player:
                                     self.last_bridge_node = target_pos
                                     self.target = target_pos
                                     self.belt_chain = set()
-                                    self.bot_belt_stuck = 0
+                                    self.belt_stuck_counter = 0
                                 else:
                                     # Cooldown == 0 ale brak surowców —
                                     # budujemy drogę na złożu (blokada dla przeciwnika)
@@ -1975,7 +1975,7 @@ class Player:
                 # Zadanie: poprowadzić sieć od last_node do Core (lub istniejącej sieci).
                 # Strategia: domyślnie conveyor krok po kroku; most jako objazd gdy pole
                 # zablokowane (ściana, budynek wroga, ruda).
-                last_node = self.last_bridge_node.get(my_id)
+                last_node = self.last_bridge_node
 
                 if not last_node:
                     # Brak last_node — nie wiemy skąd prowadzić sieć, uciekamy
@@ -1992,7 +1992,7 @@ class Player:
                         self.path = []
                 else:
                     # --- PRIORYTET: pending_splitter ---
-                    pending = self.pending_splitter.get(my_id)
+                    pending = self.pending_splitter
                     if pending is not None:
                         pend_pos, pend_dir = pending
                         b_id_pend = ct.get_tile_building_id(pend_pos) if ct.is_in_vision(pend_pos) else None
@@ -2046,7 +2046,7 @@ class Player:
 
                     network_entry_types = {EntityType.BRIDGE, EntityType.CONVEYOR,
                                            EntityType.ARMOURED_CONVEYOR, EntityType.SPLITTER}
-                    current_belt_chain = self.belt_chain.get(my_id, set())
+                    current_belt_chain = self.belt_chain
 
                     last_node_env = self.memory.get(
                         last_node,
@@ -2284,7 +2284,7 @@ class Player:
                                     
                                     # 2. Faza zbierania: Bot ledwie ruszył spod swojego harvestera (np. <= 5 kratek) -> ZEZWALAJ
                                     # (łączy się z sąsiadami tworząc lokalny węzeł zrzutowy)
-                                    current_chain_length = len(self.belt_chain.get(my_id, set()))
+                                    current_chain_length = len(self.belt_chain)
                                     is_just_starting = (current_chain_length <= 5)
                                     
                                     # 3. Faza autostrady: Jesteśmy daleko od harvestera i daleko od bazy -> ZAKAZ
@@ -2475,7 +2475,7 @@ class Player:
                     if self.bot_state == BotState.BUILD_BELT:
 
                         # --- TRYB SENTINEL: gdy stuck >= 20, ignoruj build_pos ---
-                        if self.bot_belt_stuck.get(my_id, 0) >= 20:
+                        if self.belt_stuck_counter >= 20:
                             # Jeśli nie stać na Sentinela — czekaj przy last_node zamiast porzucać
                             if not self._can_afford_build(ct, 'sentinel'):
                                 if self.target != last_node:
@@ -2487,7 +2487,7 @@ class Player:
                                          and my_pos.distance_squared(last_node) <= 2)
                                 if not ready:
                                     # Idź do last_node i poczekaj
-                                    self.bot_belt_stuck = 20
+                                    self.belt_stuck_counter = 20
                                     if self.target != last_node:
                                         self.target = last_node
                                         self.path = []
@@ -2530,7 +2530,7 @@ class Player:
                                     self.target = None
                                     self.path = []
                                     self.belt_chain = set()
-                                    self.bot_belt_stuck = 0
+                                    self.belt_stuck_counter = 0
                                     self.assigned_ore = None
 
                         elif build_pos is not None and build_target is not None:
@@ -2566,7 +2566,7 @@ class Player:
                                             built = True
 
                                     if built:
-                                        self.bot_belt_stuck = 0  # postęp — resetuj licznik
+                                        self.belt_stuck_counter = 0  # postęp — resetuj licznik
                                         if build_mode == 'conveyor':
                                             conv_output = build_pos.add(build_target)
                                             self.last_bridge_node = conv_output
@@ -2660,7 +2660,7 @@ class Player:
                             )
                             if not waiting_for_resources:
                                 # Brak opcji budowy — inkrementuj licznik stuck.
-                                self.bot_belt_stuck = self.bot_belt_stuck.get(my_id, 0) + 1
+                                self.belt_stuck_counter = self.belt_stuck_counter + 1
                                 # (gdy stuck >= 20, tryb Sentinela obsłuży to na początku
                                 # FAZY WYKONANIA w następnej turze)
                             # W obu przypadkach: podejdź do last_node i czekaj.
@@ -2709,16 +2709,16 @@ class Player:
             WANDERING_STATES = {BotState.EXPLORE, BotState.SCOUT, BotState.ROAD_LAYER,
                                 BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
             if target_pos is not None and self.bot_state in WANDERING_STATES:
-                if self.bot_target_last.get(my_id) != target_pos:
+                if self.target_last != target_pos:
                     # Nowy cel — zapamiętaj turę ustawienia
-                    self.bot_target_last = target_pos
-                    self.bot_target_since = current_round
-                elif current_round - self.bot_target_since.get(my_id, current_round) >= 60:
+                    self.target_last = target_pos
+                    self.target_since = current_round
+                elif current_round - self.target_since >= 60:
                     # Ten sam cel przez 60 tur — reset
                     self.target = None
                     self.path = []
-                    self.bot_target_last = None
-                    self.bot_target_since = current_round
+                    self.target_last = None
+                    self.target_since = current_round
                     target_pos = None
 
             # Czy bot idzie budować? (zatrzymuje się krok przed celem, nie wchodzi na nie)
@@ -2854,7 +2854,7 @@ class Player:
             claim_ore_pos = None
             current_state_now = self.bot_state
             if current_state_now in [BotState.BUILD_MINE, BotState.BUILD_BELT]:
-                claim_ore_pos = self.bot_claimed_ore.get(my_id)
+                claim_ore_pos = self.assigned_ore
                 if claim_ore_pos is not None and random.random() < 0.5:
                     emit_claim = True
 
