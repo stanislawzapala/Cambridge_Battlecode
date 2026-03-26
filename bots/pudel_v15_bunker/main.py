@@ -842,7 +842,7 @@ class Player:
                     if ct.is_in_vision(sp_pos):
                         b_id_sp_check = ct.get_tile_building_id(sp_pos)
                         if (b_id_sp_check is not None
-                                and ct.get_entity_type(b_id_sp_check) == EntityType.ROAD
+                                and ct.get_entity_type(b_id_sp_check) == {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR}
                                 and ct.get_team(b_id_sp_check) != my_team):
                             enemy_road_blocks_sp = True
 
