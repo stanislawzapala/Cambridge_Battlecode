@@ -167,7 +167,7 @@ class Player:
 
         while queue:
             iterations += 1
-            if iterations > 300:
+            if iterations > 100:
                 # FRONTIER A*: Skończył się limit czasu! 
                 # Zamiast się poddawać, wyciągamy z kolejki NAJLEPSZY punkt, który A* zamierzał właśnie sprawdzić.
                 if queue:
@@ -623,47 +623,38 @@ class Player:
                                 return False
                     return ct.can_fire(target_pos)
 
-                fired = False
-                # Prio 1: boty wroga
+                # SZYBKIE CELOWANIE (Jedna pętla dla wszystkich priorytetów)
+                BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
+                                   EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
+                                   EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+                                   EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER}
+                
+                best_target = None
+                best_prio = 4  # 1 = Bot, 2 = Budynek, 3 = Droga, 4 = Brak
+                
                 for nearby_id in ct.get_nearby_entities():
-                    if ct.get_entity_type(nearby_id) != EntityType.BUILDER_BOT:
-                        continue
                     if ct.get_team(nearby_id) != enemy_team:
                         continue
+                    
                     target_pos = ct.get_position(nearby_id)
-                    if _sentinel_can_fire(target_pos):
-                        ct.fire(target_pos)
-                        fired = True
-                        break
-                # Prio 2: budynki wroga (nie drogi, nie markery), ale nie strzelamy w harvestera obok wieżyczki
-                if not fired:
-                    BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
-                                       EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
-                                       EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                       EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER}
-                    for nearby_id in ct.get_nearby_entities():
-                        if ct.get_entity_type(nearby_id) == EntityType.MARKER:
-                            continue
-                        if ct.get_team(nearby_id) != enemy_team:
-                            continue
-                        if ct.get_entity_type(nearby_id) not in BUILDINGS_PRIO2:
-                            continue
-                        target_pos = ct.get_position(nearby_id)
-                        if _sentinel_can_fire(target_pos):
-                            ct.fire(target_pos)
-                            fired = True
-                            break
-                # Prio 3: drogi wroga
-                if not fired:
-                    for nearby_id in ct.get_nearby_entities():
-                        if ct.get_entity_type(nearby_id) != EntityType.ROAD:
-                            continue
-                        if ct.get_team(nearby_id) != enemy_team:
-                            continue
-                        target_pos = ct.get_position(nearby_id)
-                        if _sentinel_can_fire(target_pos):
-                            ct.fire(target_pos)
-                            break
+                    if not _sentinel_can_fire(target_pos):
+                        continue
+                        
+                    e_type = ct.get_entity_type(nearby_id)
+                    
+                    if e_type == EntityType.BUILDER_BOT:
+                        best_target = target_pos
+                        best_prio = 1
+                        break  # Prio 1 znalezione! Możemy przerwać pętlę i strzelać natychmiast
+                    elif e_type in BUILDINGS_PRIO2 and best_prio > 2:
+                        best_target = target_pos
+                        best_prio = 2
+                    elif e_type == EntityType.ROAD and best_prio > 3:
+                        best_target = target_pos
+                        best_prio = 3
+                        
+                if best_target is not None:
+                    ct.fire(best_target)
 
         # ==========================================
         # 3. LOGIKA PROBY (BUILDER_BOT)
