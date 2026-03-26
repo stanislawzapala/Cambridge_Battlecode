@@ -65,6 +65,14 @@ ORTHOGONAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direc
 passable_types = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.MARKER, EntityType.SPLITTER]
 
 
+# --- GLOBALNE ZBIORY OPTYMALIZACYJNE  ---
+HARD_OBSTACLES = {Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
+PASSABLE_TYPES_SET = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.MARKER, EntityType.SPLITTER}
+BUILDING_STATES = {BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER}
+WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
+NETWORK_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER, EntityType.HARVESTER}
+ORES = {Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
+
 class Player:
     def __init__(self):
         # ---DANE WSPÓLNE DLA DRUŻYNY ---
@@ -188,7 +196,7 @@ class Player:
                 if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
                     
                     memory_env = self.memory.get(next_pos)
-                    if memory_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                    if memory_env in HARD_OBSTACLES:
                         continue # Pamiętamy, że tu jest mur lub ruda, omijamy!
                     
                     is_blocked = False
@@ -199,7 +207,7 @@ class Player:
                         b_id = ct.get_tile_building_id(next_pos)
                         
                         # Twarde przeszkody (Ściany i Rudy)
-                        if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                        if env in HARD_OBSTACLES:
                             is_blocked = True
                         
                         # Budynki
@@ -513,7 +521,7 @@ class Player:
                     env = ct.get_tile_env(pos)
                     if env == Environment.WALL:
                         found_walls.append((pos, env, None, False))
-                    elif env in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                    elif env in ORES:
                         found_ores.append((pos, env, None, False))
                 
                 # Rudy są na końcu, więc .pop() zdejmie je jako pierwsze
@@ -553,20 +561,22 @@ class Player:
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW 
-            number_of_bots_to_spawn = 3 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
-            # PLUS boty specjalne od tury 400 co 12 tur
+            number_of_bots_to_spawn = 2 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
+            # PLUS boty specjalne od tury 300 co 12 tur, max 15 botów
             if ct.get_action_cooldown() == 0:
                 if self.replacement_bots_pending > 0:
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
                         self.replacement_bots_pending -= 1
-                elif current_round >= 400 and (current_round - 400) % 12 == 0:
+                        self.spawned_bots_count += 1
+                elif current_round >= 300 and (current_round - 300) % 12 == 0 and self.spawned_bots_count < 15:
                     # Bot specjalny — typ wyznaczany przez numer iteracji modulo 4
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
                         self.bot_late_spawn_index += 1
+                        self.spawned_bots_count += 1
                 elif self.spawned_bots_count < number_of_bots_to_spawn:
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
@@ -658,7 +668,7 @@ class Player:
                 self.repairman_prev_hp = ct.get_hp()
 
                 # Początkowy stan — zależy od tury spawnu
-                if current_round < 3:
+                if current_round < 2:
                     self.bot_state = BotState.BUILD_BUNKER
                     self.target = Position(map_width // 2, map_height // 2)
                 elif current_round in (8, 9):
@@ -681,10 +691,10 @@ class Player:
                 # 1. PAMIĘĆ STATYCZNA (Teren - to się nigdy nie zmienia)
                 if pos not in self.memory:
                     env = ct.get_tile_env(pos)
-                    if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                    if env in HARD_OBSTACLES:
                         self.memory[pos] = env
                         # Jeśli to ważne odkrycie (ściana lub ruda), dodajemy do VIP Facts
-                        if env in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                        if env in ORES:
                             self.vip_facts[pos] = (env, None, False)
                     
                 # 2. PAMIĘĆ DYNAMICZNA i ODCZYT FEROMONÓW (BUDYNKI + MARKERY)
@@ -2164,7 +2174,7 @@ class Player:
                             return False
                         env = self.memory.get(
                             pos, ct.get_tile_env(pos) if ct.is_in_vision(pos) else Environment.EMPTY)
-                        if env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                        if env in HARD_OBSTACLES:
                             return False
                         if ct.is_in_vision(pos):
                             b_id_t = ct.get_tile_building_id(pos)
@@ -2766,14 +2776,15 @@ class Player:
                 # Krok 2: Obsługa złoża i budowa Harvestera (bezpieczny zakres)
                 elif self.assigned_ore is not None:
                     ore_pos = self.assigned_ore
-                    if self.target != ore_pos:
-                        self.target = ore_pos
-
+                    
+                    harvester_built = False
                     if ct.is_in_vision(ore_pos):
                         ore_b_id = ct.get_tile_building_id(ore_pos)
                         harvester_built = (ore_b_id is not None and ct.get_entity_type(ore_b_id) == EntityType.HARVESTER)
-
+                        
                         if not harvester_built:
+                            if self.target != ore_pos:
+                                self.target = ore_pos
                             if my_pos.distance_squared(ore_pos) <= 2:
                                 if ct.get_action_cooldown() == 0:
                                     if ore_b_id is not None and ct.can_destroy(ore_pos):
@@ -2813,17 +2824,19 @@ class Player:
                             else:
                                 # Budujemy brakujące sentinele
                                 sn_target, sn_dir = missing_sentinels[0]
-                                if my_pos.distance_squared(sn_target) <= 2:
+                                if self.target != sn_target:
+                                    self.target = sn_target
+                                    self.path = []
+
+                                dist = my_pos.distance_squared(sn_target)
+                                if dist <= 2:
                                     if ct.get_action_cooldown() == 0:
                                         b_id_to_destroy = ct.get_tile_building_id(sn_target)
                                         if b_id_to_destroy is not None and ct.can_destroy(sn_target):
                                             ct.destroy(sn_target)
                                         elif self._can_afford_build(ct, 'sentinel') and ct.can_build_sentinel(sn_target, sn_dir):
                                             ct.build_sentinel(sn_target, sn_dir)
-                                else:
-                                    if self.target != sn_target:
-                                        self.target = sn_target
-                                        self.path = []
+                                
 
 
 
@@ -2896,8 +2909,7 @@ class Player:
                                 is_allied_core = (b_type == EntityType.CORE and ct.get_team(b_id) == my_team)
 
                                 # Twarda przeszkoda to: Ściana/Ruda ALBO budynek, który NIE JEST markerem i po którym nie da się chodzić
-                                is_hard_obstacle = (memory_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] or 
-                                                (env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE] and memory_env is None) or 
+                                is_hard_obstacle = (memory_env in HARD_OBSTACLES or (env in HARD_OBSTACLES and memory_env is None) or 
                                                 (b_id is not None and b_type not in passable_types and not can_walk_on_enemy and not is_allied_core))
                             
                             if not is_hard_obstacle and not out_of_bounds:
