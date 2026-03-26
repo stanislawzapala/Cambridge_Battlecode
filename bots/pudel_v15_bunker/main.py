@@ -673,9 +673,9 @@ class Player:
                     self.target = Position(map_width // 2, map_height // 2)
                 elif current_round in (8, 9):
                     self.bot_state = BotState.ROAD_LAYER
-                elif current_round >= 400:
+                elif current_round >= 300:
                     # Typ bota wyznaczany z tury spawnu modulo 4 (bez pamięci współdzielonej)
-                    type_index = ((current_round - 400) // 12) % 4
+                    type_index = ((current_round - 300) // 12) % 4
                     late_states = [BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER]
                     self.bot_state = late_states[type_index]
                 else:
@@ -2836,7 +2836,10 @@ class Player:
                                             ct.destroy(sn_target)
                                         elif self._can_afford_build(ct, 'sentinel') and ct.can_build_sentinel(sn_target, sn_dir):
                                             ct.build_sentinel(sn_target, sn_dir)
-                                
+                    if current_round >= 50:
+                        self.state = BotState.EXPLORE
+                        self.target = None
+                        self.path = []            
 
 
 
