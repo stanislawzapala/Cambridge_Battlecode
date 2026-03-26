@@ -28,7 +28,6 @@ from enum import Enum, auto
 # ==========================================
 class BotState(Enum):
     EXPLORE = auto()         # Losowy zwiad i roznoszenie feromonów
-    SCOUT = auto()           # WIECZNY ZWIADOWCA - tylko biega i roznosi feromony
     BUILD_MINE = auto()      # Znalazł złoże, idzie zbudować Harvester
     BUILD_BELT = auto()      # Zbudował kopalnię, ciągnie taśmociąg do Bazy/Sieci
     BUILD_DEFENSE = auto()   # (Rezerwa) Idzie postawić wieżyczkę w strategicznym miejscu
@@ -939,7 +938,7 @@ class Player:
 
             # PO TURZE 400: istniejące boty (spawnione przed 400) przechodzą w REPAIRMAN
             # — ale tylko gdy są w stanach "wolnych" (nie przerywamy aktywnych misji)
-            IDLE_STATES = {BotState.SCOUT, BotState.ROAD_LAYER} # był też BotState.EXPLORE, testowo go wyciągnąłem
+            IDLE_STATES = {BotState.ROAD_LAYER} # był też BotState.EXPLORE, testowo go wyciągnąłem
             if (current_round >= 400
                     and current_state in IDLE_STATES
                     and self.spawn_round < 400):
@@ -1834,17 +1833,6 @@ class Player:
                                     self.bot_state = BotState.REPAIRMAN
                                     self.target = None
 
-            elif current_state == BotState.SCOUT:
-                target_pos = self.target
-                
-                # ZABEZPIECZENIE: Sprawdzamy z pamięci, czy cel nie wypadł w skale
-                target_is_wall = target_pos and self.memory.get(target_pos) in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]
-                
-                # Wieczny zwiad - resetujemy cel, jeśli doszliśmy, nie mamy go, ALBO jest on w ścianie!
-                if not target_pos or my_pos == target_pos or target_is_wall:
-                    self.target = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
-                    self.path = []
-
             elif current_state == BotState.EXPLORE:
                 found_ore_pos = None
                 if not self.target or current_round % 2 == 0: # było co 5
@@ -1852,8 +1840,13 @@ class Player:
                     # (rezerwacja ważna przez 20 tur od ostatniego odczytu markera).
                     CLAIM_TTL = 20
                     candidates = {}
+                    # Teraz raw axionite nic nie daje, więc do 500 tury go nie zbieramy w ogóle
+                    acceptable_ores = [Environment.ORE_TITANIUM]
+                    if current_round >= 500:
+                        acceptable_ores.append(Environment.ORE_AXIONITE)
+
                     for pos, (env, b_type, is_enemy) in self.vip_facts.items():
-                        if env not in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                        if env not in acceptable_ores:
                             continue
                         if b_type is not None:
                             continue  # złoże już zajęte (harvester lub inny budynek)
@@ -2301,58 +2294,55 @@ class Player:
                                 #         build_is_network = True
 
                                 
-                                # Przypadek B: cand to istniejący element sieci (conveyor/most)
+                                # Przypadek B: Wpięcie w istniejący element sieci (conveyor/most)
                                 elif cand not in self.allied_core_tiles and is_existing_network(cand):
-                                    if not (cand_dist < src_dist):  # progress guard
+                                    if not (cand_dist < src_dist):  # Musi nas to zbliżać do bazy
                                         continue
 
-                                    # --- LOGIKA: LOCAL COLLECTOR vs LONG HAUL ---
-                                    # 1. Faza dostawy: Jesteśmy blisko bazy (np. promień 6 kratek -> dist_sq <= 36) -> ZEZWALAJ
-                                    is_near_base = (cand_dist <= 36)
-                                    
-                                    # 2. Faza zbierania: Bot ledwie ruszył spod swojego harvestera (np. <= 5 kratek) -> ZEZWALAJ
-                                    # (łączy się z sąsiadami tworząc lokalny węzeł zrzutowy)
-                                    current_chain_length = len(self.belt_chain)
-                                    is_just_starting = (current_chain_length <= 5)
-                                    
-                                    # 3. Faza autostrady: Jesteśmy daleko od harvestera i daleko od bazy -> ZAKAZ
-                                    if not (is_near_base or is_just_starting):
-                                        continue  # Przerywamy analizę tego kandydata, wymuszając budowę nowej klatki taśmociągu (Przypadek C)
-                                        
-                                    # --- DETEKCJA ZATORÓW (wspierająca) ---
+                                    # --- INTELIGENTNY DETEKTOR KORKÓW ---
                                     is_clogged = False
                                     try:
                                         b_id_cand = ct.get_tile_building_id(cand)
-                                        # Jeśli na kandydującej taśmie fizycznie leży ruda w tym momencie, 
-                                        # jest duża szansa, że taśma nie ma optymalnego flow
-                                        if b_id_cand and ct.get_stored_resource(b_id_cand) is not None:
-                                            is_clogged = True
+                                        cand_type = ct.get_entity_type(b_id_cand)
+                                        
+                                        # Sprawdzamy zator głębiej, aby odróżnić jadący surowiec od stojącego korka
+                                        if cand_type == EntityType.CONVEYOR and ct.get_stored_resource(b_id_cand) is not None:
+                                            cand_dir = ct.get_direction(b_id_cand)
+                                            next_pos = cand.add(cand_dir)
+                                            if ct.is_in_vision(next_pos):
+                                                b_id_next = ct.get_tile_building_id(next_pos)
+                                                # Jeśli następny element taśmy też ma na sobie rudę, to przepustowość leży
+                                                if b_id_next and ct.get_stored_resource(b_id_next) is not None:
+                                                    is_clogged = True
                                     except Exception:
                                         pass
 
-                                    # Jeśli jest zator, damy gorszy score, więc bot chętniej przedłuży
-                                    # własną taśmę, omijając korek, jeśli ma wolne pole.
-                                    score = 10 if is_clogged else 1
-                                        
+                                    if is_clogged:
+                                        continue  # Autostrada pełna! Szukamy innej opcji (np. budowa nowej linii)
+
+                                    # Taśma jest luźna (ma wolną przepustowość) - wpinamy się oszczędzając Tytan
+                                    score = 150 + cand_dist
                                     if score < best_score:
                                         best_score = score
                                         build_pos = source
                                         build_target = d
                                         build_mode = 'conveyor'
                                         build_is_network = True
-                                # Przypadek C: wolne pole — krok pośredni
-                                # NIE Core ani near_core_tiles jako cel
-                                elif (cand not in self.allied_core_tiles
-                                        and cand not in near_core_tiles
+
+                                # Przypadek D: wolne pole — krok pośredni (Budowa nowej linii)
+                                elif (cand not in near_core_tiles
                                         and tile_is_buildable(cand)
                                         and cand_dist < src_dist):
-                                    score = 100 + cand_dist
+                                    # Puste pole ma wyższy (gorszy) score bazowy (200).
+                                    # Jeśli taśma obok jest drożna (score 150), bot najpierw wepnie się w nią.
+                                    score = 200 + cand_dist
                                     if score < best_score:
                                         best_score = score
                                         build_pos = source
                                         build_target = d
                                         build_mode = 'conveyor'
                                         build_is_network = False
+
 
                         # ---- MOST ----
                         # Most może startować z dowolnego buildable source (w tym near_core)
@@ -2427,13 +2417,33 @@ class Player:
                                             build_mode = 'bridge'
                                             build_is_network = True
 
-                                    # Przypadek C: istniejący element sieci
+                                    # Przypadek C: most w istniejącą sieć
                                     elif is_existing_network(end_pos):
                                         if end_dist >= src_dist:
                                             continue
                                         if end_pos in near_core_tiles:
                                             continue
-                                        score = 202
+                                            
+                                        # Inteligentny detektor korków dla zrzutu z mostu
+                                        is_clogged = False
+                                        try:
+                                            b_id_end = ct.get_tile_building_id(end_pos)
+                                            end_type = ct.get_entity_type(b_id_end)
+                                            
+                                            if end_type == EntityType.CONVEYOR and ct.get_stored_resource(b_id_end) is not None:
+                                                end_dir = ct.get_direction(b_id_end)
+                                                next_pos = end_pos.add(end_dir)
+                                                if ct.is_in_vision(next_pos):
+                                                    b_id_next = ct.get_tile_building_id(next_pos)
+                                                    if b_id_next and ct.get_stored_resource(b_id_next) is not None:
+                                                        is_clogged = True
+                                        except Exception:
+                                            pass
+                                            
+                                        if is_clogged:
+                                            continue # Cel zapchany, nie lądujemy tu mostem
+                                            
+                                        score = 250 + end_dist
                                         if score < best_score:
                                             best_score = score
                                             build_pos = source
@@ -2734,8 +2744,8 @@ class Player:
 
             # BEZPIECZNIK: jeśli cel nie zmienił się przez 60 tur, resetuj go.
             # Działa tylko w stanach nie-budujących.
-            WANDERING_STATES = {BotState.EXPLORE, BotState.SCOUT, BotState.ROAD_LAYER,
-                                BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
+            WANDERING_STATES = {BotState.EXPLORE,  BotState.ROAD_LAYER, BotState.KAMIKAZE, 
+                                BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
             if target_pos is not None and self.bot_state in WANDERING_STATES:
                 if self.target_last != target_pos:
                     # Nowy cel — zapamiętaj turę ustawienia
