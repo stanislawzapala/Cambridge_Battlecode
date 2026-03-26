@@ -79,7 +79,8 @@ BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
                                    EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
                                    EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
                                    EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER}
-                
+PROTECTED_BUILDING_TYPES = {EntityType.BRIDGE, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+                EntityType.SPLITTER, EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.ROAD, EntityType.BARRIER}                
 
 
 
@@ -371,7 +372,6 @@ class Player:
                 
         return nearest_pos
 
-
     def building_priority(self, b_id, ct: Controller) -> int:
         """Zwraca poziom ważności budynku na polu (0=brak, 1=marker, 2=droga, 3=reszta)."""
         if b_id is None:
@@ -519,11 +519,9 @@ class Player:
         map_height = ct.get_map_height()
         my_team = ct.get_team()
         enemy_team = Team.B if my_team == Team.A else Team.A
-        
         etype = ct.get_entity_type()
         my_pos = ct.get_position()
         my_id = ct.get_id()
-
 
 
         # ==========================================
@@ -1604,8 +1602,6 @@ class Player:
                         if self.smelter_titanium_src and self.smelter_axionite_src:
                             self.smelter_phase = 'build'
                         elif self.allied_core_tiles:
-                            # Idź do core żeby lepiej skanować
-                            core_center = list(self.allied_core_tiles)[len(self.allied_core_tiles)//2]
                             if not self.target:
                                 self.target = self.core_center
                                 self.path = []
@@ -1620,7 +1616,7 @@ class Player:
                         ax_src = self.smelter_axionite_src
                         best_fpos = None
                         best_score = float('inf')
-                        if self.allied_core_tiles:
+                        if self.core_center:
                             cx = self.core_center.x
                             cy = self.core_center.y
                             # Oblicz pola wejściowe splitterów — Foundry NIE może tam stanąć
@@ -1632,11 +1628,11 @@ class Player:
                             ]
                             splitter_input_positions: set[Position] = set()
                             for ddx, ddy, sp_faces in KNIGHT_OFFSETS_FP:
-                                sp = Position(ccx + ddx, ccy + ddy)
+                                sp = Position(cx + ddx, cy + ddy)
                                 splitter_input_positions.add(sp.add(sp_faces.opposite()))
                             for dx in range(-5, 6):
                                 for dy in range(-5, 6):
-                                    fp = Position(ccx + dx, ccy + dy)
+                                    fp = Position(cx + dx, cy + dy)
                                     if not (0 <= fp.x < map_width and 0 <= fp.y < map_height):
                                         continue
                                     fp_env = self.memory.get(fp, Environment.EMPTY)
@@ -1650,7 +1646,7 @@ class Player:
                                     # Nie stawiamy Foundry na pozycji Splittera
                                     if fp in self.allied_splitter_tiles:
                                         continue
-                                    d_core = fp.distance_squared(Position(ccx, ccy))
+                                    d_core = fp.distance_squared(Position(cx, cy))
                                     d_ti = fp.distance_squared(ti_src) if ti_src else 999
                                     d_ax = fp.distance_squared(ax_src) if ax_src else 999
                                     score = d_core + d_ti + d_ax
@@ -2799,7 +2795,7 @@ class Player:
                                         elif self._can_afford_build(ct, 'sentinel') and ct.can_build_sentinel(sn_target, sn_dir):
                                             ct.build_sentinel(sn_target, sn_dir)
                     if current_round >= 50:
-                        self.state = BotState.EXPLORE
+                        self.bot_state = BotState.EXPLORE
                         self.target = None
                         self.path = []            
 
@@ -2821,8 +2817,6 @@ class Player:
 
             # BEZPIECZNIK: jeśli cel nie zmienił się przez 60 tur, resetuj go.
             # Działa tylko w stanach nie-budujących.
-            WANDERING_STATES = {BotState.EXPLORE,  BotState.ROAD_LAYER, BotState.KAMIKAZE, 
-                                BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
             if target_pos is not None and self.bot_state in WANDERING_STATES:
                 if self.target_last != target_pos:
                     # Nowy cel — zapamiętaj turę ustawienia
@@ -2837,7 +2831,7 @@ class Player:
                     target_pos = None
 
             # Czy bot idzie budować? (zatrzymuje się krok przed celem, nie wchodzi na nie)
-            is_building = (self.bot_state in [BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER])
+            is_building = (self.bot_state in BUILDING_STATES)
 
             
             if target_pos:
@@ -2846,12 +2840,13 @@ class Player:
                 # Jeśli bot ma zbudować coś na polu, na którym właśnie stoi - musi zrobić krok w bok!
                 # =======================================================
                 if is_building and my_pos == target_pos:
-                    for try_dir in DIRECTIONS:
-                        if ct.can_move(try_dir):
-                            ct.move(try_dir)
-                            future_pos = my_pos.add(try_dir)
-                            self.path = []
-                            break
+                    if ct.get_action_cooldown() ==0:
+                        for try_dir in DIRECTIONS:
+                            if ct.can_move(try_dir):
+                                ct.move(try_dir)
+                                future_pos = my_pos.add(try_dir)
+                                self.path = []
+                                break
                 # HAMULEC: Zatrzymujemy się krok przed celem TYLKO, gdy idziemy budować.
                 if not is_building or my_pos.distance_squared(target_pos) > 1:
                     
@@ -2951,11 +2946,7 @@ class Player:
                 forbidden_tiles.add(next_planned_pos)
 
             # Szukamy miejsca na marker (wspólne dla obu gałęzi)
-            PROTECTED_BUILDING_TYPES = {
-                EntityType.BRIDGE, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                EntityType.SPLITTER, EntityType.HARVESTER, EntityType.FOUNDRY,
-                EntityType.ROAD, EntityType.BARRIER
-            }
+            
             def find_marker_slot():
                 place_pos = None
                 backup_pos = None
@@ -2978,7 +2969,7 @@ class Player:
             emit_claim = False
             claim_ore_pos = None
             current_state_now = self.bot_state
-            if current_state_now in [BotState.BUILD_MINE, BotState.BUILD_BELT]:
+            if current_state_now in {BotState.BUILD_MINE, BotState.BUILD_BELT}:
                 claim_ore_pos = self.assigned_ore
                 if claim_ore_pos is not None and random.random() < 0.5:
                     emit_claim = True
@@ -2991,5 +2982,7 @@ class Player:
                 elif self.vip_facts:
                     # Emitujemy losowy VIP (kanał 0)
                     rep_pos = random.choice(list(self.vip_facts.keys()))
-                    rep_env, rep_btype, rep_is_enemy = self.vip_facts[rep_pos]
-                    ct.place_marker(final_pos, self.pack_map_marker(current_round, rep_pos, rep_env, rep_btype, rep_is_enemy))
+                    fact = self.vip_facts[rep_pos]
+                    if fact:
+                        rep_env, rep_btype, rep_is_enemy = fact
+                        ct.place_marker(final_pos, self.pack_map_marker(current_round, rep_pos, rep_env, rep_btype, rep_is_enemy))
