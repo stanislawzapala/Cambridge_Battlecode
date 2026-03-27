@@ -218,30 +218,22 @@ class Player:
                 # Jeśli jeszcze tu nie byliśmy ALBO znaleźliśmy tańszą/szybszą ścieżkę do tego pola
                 if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
                     
-                    memory_env = self.memory.get(next_pos)
+                    memory_env = self.memory.get(next_pos, Environment.EMPTY)
                     if memory_env in HARD_OBSTACLES:
                         continue # Pamiętamy, że tu jest mur lub ruda, omijamy!
                     
                     is_blocked = False
 
-                    # 1. OPTYMISTYCZNE SPRAWDZANIE MGŁY WOJNY
-                    if ct.is_in_vision(next_pos):
-                        env = ct.get_tile_env(next_pos)
-                        b_id = ct.get_tile_building_id(next_pos)
-                        
-                        # Twarde przeszkody (Ściany i Rudy)
-                        if env in HARD_OBSTACLES:
-                            is_blocked = True
-                        
-                        # Budynki
-                        elif b_id is not None:
-                            b_type = ct.get_entity_type(b_id)
-                            
+                    # 2. Czytamy budynki z pamięci bota
+                    b_info = self.buildings.get(next_pos)
+                    if b_info is not None:
+                        b_type, b_team, _ = b_info
+                        if b_type is not None:
                             # Jeśli to nie jest droga/taśmociąg i nie jest to nasz Rdzeń, to nas blokuje
                             if b_type not in passable_types and b_type != EntityType.CORE:
                                 is_blocked = True
                             # Wrogi rdzeń też blokuje
-                            elif b_type == EntityType.CORE and ct.get_team(b_id) != my_team:
+                            elif b_type == EntityType.CORE and b_team != my_team:
                                 is_blocked = True
 
                     if is_blocked:
