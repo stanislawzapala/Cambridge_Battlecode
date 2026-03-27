@@ -561,7 +561,7 @@ class Player:
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW 
-            number_of_bots_to_spawn = 2 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
+            number_of_bots_to_spawn = 3 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
             # PLUS boty specjalne od tury 300 co 12 tur, max 15 botów
             if ct.get_action_cooldown() == 0:
                 if self.replacement_bots_pending > 0:
@@ -913,7 +913,7 @@ class Player:
                     if ct.is_in_vision(sn_pos):
                         b_id_sn_check = ct.get_tile_building_id(sn_pos)
                         if (b_id_sn_check is not None
-                                and ct.get_entity_type(b_id_sn_check) == EntityType.ROAD
+                                and ct.get_entity_type(b_id_sn_check) in {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR}
                                 and ct.get_team(b_id_sn_check) != my_team):
                             enemy_road_blocks = True
 
@@ -2836,10 +2836,10 @@ class Player:
                                             ct.destroy(sn_target)
                                         elif self._can_afford_build(ct, 'sentinel') and ct.can_build_sentinel(sn_target, sn_dir):
                                             ct.build_sentinel(sn_target, sn_dir)
-                    if current_round >= 50:
-                        self.state = BotState.EXPLORE
-                        self.target = None
-                        self.path = []            
+                if current_round >= 60:
+                    self.state = BotState.EXPLORE
+                    self.target = None
+                    self.path = []            
 
 
 
