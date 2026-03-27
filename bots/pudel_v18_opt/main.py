@@ -68,39 +68,54 @@ passable_types = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONV
 
 
 # --- GLOBALNE ZBIORY OPTYMALIZACYJNE  ---
+
+# 1. ŚRODOWISKO I TEREN
+ORES = {Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
 HARD_OBSTACLES = {Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
+
+# 2. PORUSZANIE SIĘ I NAWIGACJA (A* i uniki)
 WALKABLE_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD, EntityType.BRIDGE, EntityType.SPLITTER}
 PASSABLE_TYPES_SET = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.MARKER, EntityType.SPLITTER}
-BUILDING_STATES = {BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER}
-WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
-NETWORK_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER, EntityType.HARVESTER}
-ORES = {Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
-COST_MAPPING = {
-            'conveyor': CONVEYOR_BASE_COST,
-            'splitter': SPLITTER_BASE_COST,
-            'bridge': BRIDGE_BASE_COST,
-            'armoured_conveyor': ARMOURED_CONVEYOR_BASE_COST,
-            'harvester': HARVESTER_BASE_COST,
-            'road': ROAD_BASE_COST,
-            'barrier': BARRIER_BASE_COST,
-            'gunner': GUNNER_BASE_COST,
-            'sentinel': SENTINEL_BASE_COST,
-            'breach': BREACH_BASE_COST,
-            'launcher': LAUNCHER_BASE_COST,
-            'foundry': FOUNDRY_BASE_COST,
-            'builder_bot': BUILDER_BOT_BASE_COST
-        }
-NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
-BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
-                                       EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
-                                       EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                       EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE}
-LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
-JUNK_ENEMY_BUILDINGS = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}
-VIP_FRIENDLY = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER}
-NETWORK_TYPES_S = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                   EntityType.BRIDGE, EntityType.SPLITTER}
 
+# 3. STANY BOTÓW (Maszyna stanów)
+BUILDING_STATES = {BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER}
+# Uwaga: Dodałem tu BotState.HARRAS, o którym mówiliśmy wcześniej!
+WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER, BotState.HARRAS}
+LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
+
+# 4. SIEĆ LOGISTYCZNA
+# (NETWORK i NETWORK_TYPES_S to obecnie ten sam zbiór - docelowo zrób refactor i zostaw tylko NETWORK)
+NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
+NETWORK_TYPES_S = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
+# NETWORK_TYPES to to samo co wyżej, ale zawiera Harvestera
+NETWORK_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER, EntityType.HARVESTER}
+
+# 5. PAMIĘĆ, STRATEGIA I CELE DO WALKI
+VIP_FRIENDLY = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER}
+JUNK_ENEMY_BUILDINGS = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}
+BUILDINGS_PRIO2 = {
+    EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
+    EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
+    EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+    EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE
+}
+
+# 6. EKONOMIA
+COST_MAPPING = {
+    'conveyor': CONVEYOR_BASE_COST,
+    'splitter': SPLITTER_BASE_COST,
+    'bridge': BRIDGE_BASE_COST,
+    'armoured_conveyor': ARMOURED_CONVEYOR_BASE_COST,
+    'harvester': HARVESTER_BASE_COST,
+    'road': ROAD_BASE_COST,
+    'barrier': BARRIER_BASE_COST,
+    'gunner': GUNNER_BASE_COST,
+    'sentinel': SENTINEL_BASE_COST,
+    'breach': BREACH_BASE_COST,
+    'launcher': LAUNCHER_BASE_COST,
+    'foundry': FOUNDRY_BASE_COST,
+    'builder_bot': BUILDER_BOT_BASE_COST
+}
 
 
 
@@ -1656,7 +1671,7 @@ class Player:
                         ax_src = self.smelter_axionite_src
                         best_fpos = None
                         best_score = float('inf')
-                        if self.
+                        if self.my_core_center:
                             # Oblicz pola wejściowe splitterów — Foundry NIE może tam stanąć
                             KNIGHT_OFFSETS_FP = [
                                 ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
