@@ -67,7 +67,7 @@ passable_types = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONV
 
 # --- GLOBALNE ZBIORY OPTYMALIZACYJNE  ---
 HARD_OBSTACLES = {Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
-WALKABLE_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD}
+WALKABLE_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD, EntityType.BRIDGE}
 PASSABLE_TYPES_SET = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.MARKER, EntityType.SPLITTER}
 BUILDING_STATES = {BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER}
 WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
@@ -756,12 +756,10 @@ class Player:
                                 if data['b_type'] is not None:
                                     # Marker mówi, że ktoś coś tu zbudował
                                     if data['is_enemy']:
-                                        JUNK_ENEMY_BUILDINGS = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE]
                                         if data['b_type'] not in JUNK_ENEMY_BUILDINGS:
                                             self.vip_facts[m_pos] = (real_env_marker, data['b_type'], True)
                                     else:
                                         # To NASZ budynek
-                                        VIP_FRIENDLY = [EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER]
                                         if data['b_type'] in VIP_FRIENDLY:
                                             self.vip_facts[m_pos] = (real_env_marker, data['b_type'], False)
                                 else:
@@ -2849,7 +2847,59 @@ class Player:
                                             ct.destroy(sn_target)
                                         elif self._can_afford_build(ct, 'sentinel') and ct.can_build_sentinel(sn_target, sn_dir):
                                             ct.build_sentinel(sn_target, sn_dir)
-                          
+            
+            elif current_state == BotState.HARRAS:
+                # ==========================================
+                # HARRAS: Niszczarka taśmociągów i mostów.
+                # Szuka wrogiej infrastruktury logistycznej, wchodzi na nią i atakuje w nieskończoność.
+                # ==========================================
+                
+                is_attacking = False
+                
+                # 1. Sprawdzamy, czy stoimy dokładnie na celu do zniszczenia
+                b_id_here = ct.get_tile_building_id(my_pos)
+                if b_id_here is not None and ct.get_team(b_id_here) == enemy_team:
+                    b_type_here = ct.get_entity_type(b_id_here)
+                    if b_type_here in WALKABLE_TYPES:
+                        
+                        # Jesteśmy na wrogiej infrastrukturze! Niszczymy.
+                        if ct.get_action_cooldown() == 0 and ct.can_fire(my_pos):
+                            ct.fire(my_pos)
+                        
+                        # Zatrzymujemy się w miejscu i tłuczemy aż pole będzie czyste
+                        self.target = my_pos
+                        self.path = []
+                        is_attacking = True
+                
+                # 2. Jeśli nie atakujemy w tej turze, to szukamy nowego celu (lub odświeżamy stary)
+                if not is_attacking:
+                    # Szukamy nowego celu na starcie, albo po dotarciu na puste pole, albo co 10 tur (żeby namierzyć coś bliżej)
+                    if not self.target or self.target == my_pos or current_round % 5 == 0:
+                        best_junk_pos = None
+                        best_dist = float('inf')
+                        
+                        # Przeszukujemy pełną pamięć budynków (bo drogi/taśmociągi wroga nie wchodzą do VIP Facts)
+                        for pos, (b_type, b_team, _) in self.buildings.items():
+                            if b_team == enemy_team and b_type in WALKABLE_TYPES:
+                                d = my_pos.distance_squared(pos)
+                                if d < best_dist:
+                                    best_dist = d
+                                    best_junk_pos = pos
+                                    
+                        if best_junk_pos:
+                            # Znaleźliśmy wrogi taśmociąg/drogę!
+                            if self.target != best_junk_pos:
+                                self.target = best_junk_pos
+                                self.path = []
+                        elif not self.target or self.target == my_pos:
+                            # 3. Brak wrogich celów w pamięci -> losowy patrol po mapie
+                            target_is_wall = (self.target and self.memory.get(self.target) in HARD_OBSTACLES)
+                            if not self.target or my_pos == self.target or target_is_wall:
+                                self.target = Position(
+                                    random.randint(0, map_width - 1),
+                                    random.randint(0, map_height - 1)
+                                )
+                                self.path = []              
 
 
 
