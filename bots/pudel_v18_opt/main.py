@@ -21,6 +21,8 @@ import random
 import heapq
 # 4. For Enum states
 from enum import Enum, auto
+# 5. Math for explore logic
+import math
 
 
 # ==========================================
@@ -96,8 +98,10 @@ BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
 LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
 JUNK_ENEMY_BUILDINGS = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}
 VIP_FRIENDLY = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER}
-
-
+NETWORK_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+                                 EntityType.BRIDGE, EntityType.SPLITTER, EntityType.HARVESTER}
+NETWORK_TYPES_S = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+                                   EntityType.BRIDGE, EntityType.SPLITTER}
 
 
 
@@ -109,6 +113,9 @@ class Player:
         self.allied_core_tiles: set[Position] = set()
         self.allied_splitter_tiles: set[Position] = set()
         self.enemy_roads_near_core: set[Position] = set()
+        self.my_core_center: Position | None = None
+        self.my_core_cx: int = 0
+        self.my_core_cy: int = 0
         
         # CORE
         self.spawned_bots_count: int = 0
@@ -678,6 +685,8 @@ class Player:
                     self.target = Position(map_width // 2, map_height // 2)
                 elif current_round in (8, 9):
                     self.bot_state = BotState.ROAD_LAYER
+                elif current_round == 50:
+                    self.bot_state = BotState.FORTIFIER
                 elif current_round >= 150:
                     # Typ bota wyznaczany z tury spawnu modulo 4 (bez pamięci współdzielonej)
                     type_index = ((current_round - 150) // 12) % 6
@@ -797,17 +806,23 @@ class Player:
                             # To był budynek na pustym polu i został zniszczony. Kasujemy ducha.
                             del self.vip_facts[pos]
 
-            
+            # ==========================================
+            # 1.5 GLOBALNE WYLICZENIE ŚRODKA BAZY (DLA WSZYSTKICH STANÓW)
+            # ==========================================
+            if not self.my_core_center and self.allied_core_tiles:
+                core_xs = [p.x for p in self.allied_core_tiles]
+                core_ys = [p.y for p in self.allied_core_tiles]
+                
+                self.my_core_cx = sum(core_xs) // len(core_xs)
+                self.my_core_cy = sum(core_ys) // len(core_ys)
+                self.my_core_center = Position(self.my_core_cx, self.my_core_cy)
+
             # ==========================================
             # 2. OBSŁUGA SPLITTERÓW (niezależna od stanu, od tury 100)
             # ==========================================
             # Budowa Foundry (SMELTER) ma pierwszeństwo — Smelter nie przerywa swojej misji
-            if current_round >= 100 and self.allied_core_tiles and self.bot_state != BotState.SMELTER:
-                core_xs = [p.x for p in self.allied_core_tiles]
-                core_ys = [p.y for p in self.allied_core_tiles]
-                cx = (min(core_xs) + max(core_xs)) // 2
-                cy = (min(core_ys) + max(core_ys)) // 2
-
+            if current_round >= 100 and self.my_core_center and self.bot_state != BotState.SMELTER:
+                
                 knight_offsets = [
                     ( 1, -2, Direction.SOUTH),  # NNE  → faces SOUTH
                     ( 2, -1, Direction.WEST),   # ENE  → faces WEST
@@ -819,11 +834,11 @@ class Player:
                     (-1, -2, Direction.SOUTH),  # NNW  → faces SOUTH
                 ]
                 for ddx, ddy, faces in knight_offsets:
-                    sp_pos = Position(cx + ddx, cy + ddy)
+                    sp_pos = Position(self.my_core_cx + ddx, self.my_core_cy + ddy)
                     if not (0 <= sp_pos.x < map_width and 0 <= sp_pos.y < map_height):
                         continue
                     sp_env = self.memory.get(sp_pos, ct.get_tile_env(sp_pos) if ct.is_in_vision(sp_pos) else Environment.EMPTY)
-                    if sp_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                    if sp_env in HARD_OBSTACLES:
                         continue
                     # Aktualizujemy globalny set delivery tiles
                     self.allied_splitter_tiles.add(sp_pos)
@@ -842,7 +857,7 @@ class Player:
                     if ct.is_in_vision(sp_pos):
                         b_id_sp_check = ct.get_tile_building_id(sp_pos)
                         if (b_id_sp_check is not None
-                                and ct.get_entity_type(b_id_sp_check) == {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR}
+                                and ct.get_entity_type(b_id_sp_check) == NETWORK
                                 and ct.get_team(b_id_sp_check) != my_team):
                             enemy_road_blocks_sp = True
 
@@ -877,12 +892,8 @@ class Player:
             # 2b. OBSŁUGA SENTINELI WOKÓŁ CORE (od tury 300)
             # ==========================================
             # Budowa Foundry (SMELTER) ma pierwszeństwo
-            if current_round >= 150 and self.allied_core_tiles and self.bot_state != BotState.SMELTER:
-                core_xs = [p.x for p in self.allied_core_tiles]
-                core_ys = [p.y for p in self.allied_core_tiles]
-                cx = (min(core_xs) + max(core_xs)) // 2
-                cy = (min(core_ys) + max(core_ys)) // 2
-
+            if current_round >= 150 and self.my_core_center and self.bot_state != BotState.SMELTER:
+                
                 sentinel_offsets = [
                     ( 0, -2, Direction.NORTH),   # N
                     ( 2, -2, Direction.NORTHEAST),# NE
@@ -894,11 +905,11 @@ class Player:
                     (-2, -2, Direction.NORTHWEST),# NW
                 ]
                 for ddx, ddy, facing in sentinel_offsets:
-                    sn_pos = Position(cx + ddx, cy + ddy)
+                    sn_pos = Position(self.my_core_cx + ddx, self.my_core_cy + ddy)
                     if not (0 <= sn_pos.x < map_width and 0 <= sn_pos.y < map_height):
                         continue
                     sn_env = self.memory.get(sn_pos, ct.get_tile_env(sn_pos) if ct.is_in_vision(sn_pos) else Environment.EMPTY)
-                    if sn_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                    if sn_env in HARD_OBSTACLES:
                         continue
                     # Czy ten Sentinel już stoi?
                     if not ct.is_in_vision(sn_pos):
@@ -913,7 +924,7 @@ class Player:
                     if ct.is_in_vision(sn_pos):
                         b_id_sn_check = ct.get_tile_building_id(sn_pos)
                         if (b_id_sn_check is not None
-                                and ct.get_entity_type(b_id_sn_check) in {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR}
+                                and ct.get_entity_type(b_id_sn_check) in NETWORK
                                 and ct.get_team(b_id_sn_check) != my_team):
                             enemy_road_blocks = True
 
@@ -1010,7 +1021,7 @@ class Player:
                 # (nie wymaga limitu surowcowego)
                 ore_fence_target = None
                 for ore_pos, (ore_env, ore_btype, _) in self.vip_facts.items():
-                    if ore_env not in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                    if ore_env not in ORES:
                         continue
                     if not ct.is_in_vision(ore_pos):
                         continue
@@ -1032,7 +1043,7 @@ class Player:
                             if not (0 <= nb.x < map_width and 0 <= nb.y < map_height):
                                 continue
                             nb_env = self.memory.get(nb, ct.get_tile_env(nb) if ct.is_in_vision(nb) else Environment.EMPTY)
-                            if nb_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                            if nb_env in HARD_OBSTACLES:
                                 continue
                             if not ct.is_in_vision(nb):
                                 continue
@@ -1063,7 +1074,7 @@ class Player:
                     target_pos = self.target
                     target_is_wall = (target_pos and
                         self.memory.get(target_pos) in
-                        [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE])
+                        HARD_OBSTACLES)
                     if not target_pos or my_pos == target_pos or target_is_wall:
                         self.target = Position(
                             random.randint(0, map_width - 1),
@@ -1075,7 +1086,7 @@ class Player:
                     target_pos = self.target
                     target_is_wall = (target_pos and
                         self.memory.get(target_pos) in
-                        [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE])
+                        HARD_OBSTACLES)
                     if not target_pos or my_pos == target_pos or target_is_wall:
                         self.target = Position(
                             random.randint(0, map_width - 1),
@@ -1162,8 +1173,7 @@ class Player:
                                     continue
                                 nb_bt = ct.get_entity_type(nb_b_id)
                                 if (ct.get_team(nb_b_id) == enemy_team and
-                                        nb_bt in {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                                  EntityType.BRIDGE, EntityType.SPLITTER}):
+                                        nb_bt in NETWORK):
                                     network_dir = d
                                     enemy_network_pos = nb
                                     break
@@ -1178,7 +1188,7 @@ class Player:
                                     if not ct.is_in_vision(sp):
                                         continue
                                     sp_env = ct.get_tile_env(sp)
-                                    if sp_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                                    if sp_env in HARD_OBSTACLES:
                                         continue
                                     sp_b_id = ct.get_tile_building_id(sp)
                                     if sp_b_id is not None:
@@ -1242,8 +1252,6 @@ class Player:
                 # REPAIRMAN: leczy uszkodzone elementy sieci, naprawia przerwy.
                 # Gdy otrzyma obrażenia — ucieka, stawia markery alarmowe przy core, wraca.
                 # ==========================================
-                NETWORK_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                 EntityType.BRIDGE, EntityType.SPLITTER, EntityType.HARVESTER}
 
                 # --- DETEKCJA OBRAŻEŃ ---
                 current_hp = ct.get_hp()
@@ -1328,7 +1336,7 @@ class Player:
                                         continue
                                     out_b = ct.get_tile_building_id(out_pos)
                                     out_env = ct.get_tile_env(out_pos)
-                                    if out_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                                    if out_env in HARD_OBSTACLES:
                                         continue
                                     if out_b is None or (ct.get_entity_type(out_b) == EntityType.MARKER):
                                         # Ślepy koniec — napraw: postaw conveyor z out_pos w kierunku core
@@ -1336,12 +1344,8 @@ class Player:
                                             if out_b is not None and ct.can_destroy(out_pos):
                                                 ct.destroy(out_pos)
                                             # Buduj kolejny conveyor w kierunku core
-                                            if self.allied_core_tiles:
-                                                core_xs = [p.x for p in self.allied_core_tiles]
-                                                core_ys = [p.y for p in self.allied_core_tiles]
-                                                ccx = (min(core_xs) + max(core_xs)) // 2
-                                                ccy = (min(core_ys) + max(core_ys)) // 2
-                                                repair_dir = out_pos.direction_to(Position(ccx, ccy))
+                                            if self.my_core_center:
+                                                repair_dir = out_pos.direction_to(Position(self.my_core_cx, self.my_core_cy))
                                                 # Upewnij się że to kierunek ortogonalny
                                                 for rd in ORTHOGONAL_DIRECTIONS:
                                                     if rd == repair_dir or rd == out_pos.direction_to(Position(ccx, ccy)):
@@ -1363,19 +1367,15 @@ class Player:
                                         continue
                                     bt_b = ct.get_tile_building_id(bridge_target)
                                     bt_env = ct.get_tile_env(bridge_target)
-                                    if bt_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                                    if bt_env in HARD_OBSTACLES:
                                         continue
                                     if bt_b is None or (ct.get_entity_type(bt_b) == EntityType.MARKER):
                                         # Most do naprawy — zbuduj conveyor na miejscu lądowania
                                         if my_pos.distance_squared(bridge_target) <= 2:
                                             if bt_b is not None and ct.can_destroy(bridge_target):
                                                 ct.destroy(bridge_target)
-                                            if self.allied_core_tiles:
-                                                core_xs = [p.x for p in self.allied_core_tiles]
-                                                core_ys = [p.y for p in self.allied_core_tiles]
-                                                ccx = (min(core_xs) + max(core_xs)) // 2
-                                                ccy = (min(core_ys) + max(core_ys)) // 2
-                                                repair_dir = bridge_target.direction_to(Position(ccx, ccy))
+                                            if self.my_core_center:
+                                                repair_dir = bridge_target.direction_to(Position(self.my_core_cx, self.my_core_cy))
                                                 for rd in ORTHOGONAL_DIRECTIONS:
                                                     if ct.can_build_conveyor(bridge_target, rd):
                                                         ct.build_conveyor(bridge_target, rd)
@@ -1529,7 +1529,7 @@ class Player:
                             if not (0 <= sn.x < map_width and 0 <= sn.y < map_height): continue
                             if not ct.is_in_vision(sn): continue
                             sn_env = ct.get_tile_env(sn)
-                            if sn_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]: continue
+                            if sn_env in HARD_OBSTACLES: continue
                             sn_b_id = ct.get_tile_building_id(sn)
                             if sn_b_id is not None:
                                 sn_bt = ct.get_entity_type(sn_b_id)
@@ -1589,8 +1589,6 @@ class Player:
                 # SMELTER: buduje Foundry i podłącza do sieci
                 # ==========================================
                 phase = self.smelter_phase
-                NETWORK_TYPES_S = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                   EntityType.BRIDGE, EntityType.SPLITTER}
 
                 if phase == 'scan':
                     # Sprawdź czy Foundry już istnieje — fizycznie w zasięgu lub w vip_facts
@@ -1660,11 +1658,7 @@ class Player:
                         ax_src = self.smelter_axionite_src
                         best_fpos = None
                         best_score = float('inf')
-                        if self.allied_core_tiles:
-                            core_xs = [p.x for p in self.allied_core_tiles]
-                            core_ys = [p.y for p in self.allied_core_tiles]
-                            ccx = (min(core_xs) + max(core_xs)) // 2
-                            ccy = (min(core_ys) + max(core_ys)) // 2
+                        if self.
                             # Oblicz pola wejściowe splitterów — Foundry NIE może tam stanąć
                             KNIGHT_OFFSETS_FP = [
                                 ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
@@ -1674,15 +1668,15 @@ class Player:
                             ]
                             splitter_input_positions: set[Position] = set()
                             for ddx, ddy, sp_faces in KNIGHT_OFFSETS_FP:
-                                sp = Position(ccx + ddx, ccy + ddy)
+                                sp = Position(self.my_core_cx + ddx, self.my_core_cy + ddy)
                                 splitter_input_positions.add(sp.add(sp_faces.opposite()))
                             for dx in range(-5, 6):
                                 for dy in range(-5, 6):
-                                    fp = Position(ccx + dx, ccy + dy)
+                                    fp = Position(self.my_core_cx + dx, self.my_core_cy + dy)
                                     if not (0 <= fp.x < map_width and 0 <= fp.y < map_height):
                                         continue
                                     fp_env = self.memory.get(fp, Environment.EMPTY)
-                                    if fp_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                                    if fp_env in HARD_OBSTACLES:
                                         continue
                                     if fp in self.allied_core_tiles:
                                         continue
@@ -1871,7 +1865,7 @@ class Player:
                     candidates = {}
                     # Teraz raw axionite nic nie daje, więc do 500 tury go nie zbieramy w ogóle
                     acceptable_ores = [Environment.ORE_TITANIUM]
-                    if current_round >= 500:
+                    if current_round >= 300:
                         acceptable_ores.append(Environment.ORE_AXIONITE)
 
                     for pos, (env, b_type, is_enemy) in self.vip_facts.items():
@@ -1901,28 +1895,25 @@ class Player:
                     if not self.target or (
                             my_pos == self.target
                             and self.target not in self.allied_core_tiles):
-                        if current_round < 50: # Na początku idziemy albo do środka, albo do któregoś z krańców
-                            margin = 4
-                            # Definiujemy wszystkie 4 potencjalne rogi mapy
-                            all_corners = [
-                                Position(margin, margin),                                          # Lewy-Górny
-                                Position(map_width - 1 - margin, margin),                          # Prawy-Górny
-                                Position(margin, map_height - 1 - margin),                         # Lewy-Dolny
-                                Position(map_width - 1 - margin, map_height - 1 - margin)          # Prawy-Dolny
-                            ]
-
-                            # Sortujemy rogi malejąco względem odległości od naszej aktualnej pozycji
-                            # (Dzięki reverse=True najdalsze rogi wylądują na początku listy)
-                            all_corners.sort(key=lambda p: my_pos.distance_squared(p), reverse=True)
-
-                            # Losujemy cel: najdalszy róg, drugi najdalszy róg, ALBO środek mapy
-                            self.target = random.choice([
-                                all_corners[1], 
-                                all_corners[2], 
-                                Position(map_width // 2, map_height // 2)
-                            ])
-                        else:
-                            self.target = Position(random.randint(0, map_width - 1), random.randint(0, map_height - 1))
+                        # --- FALA SONARU (ROSNĄCE OKRĘGI WOKÓŁ BAZY) ---
+                        
+                        
+                        # 2. Promień rośnie wraz z upływem gry. 
+                        # Np. zaczynamy od promienia 6 i powiększamy okrąg o 1 kratkę co 5 tur
+                        current_radius = 6 + (current_round // 5)
+                        
+                        # 3. Losujemy losowy kąt na tym okręgu (od 0 do 360 stopni, czyli 2*PI radianów)
+                        angle = random.uniform(0, 2 * math.pi)
+                        
+                        # 4. Wyliczamy nową pozycję na obwodzie wyznaczonego koła
+                        target_x = int(self.my_core_cx + current_radius * math.cos(angle))
+                        target_y = int(self.my_core_cy + current_radius * math.sin(angle))
+                        
+                        # 5. ZABEZPIECZENIE: Docinamy cel, żeby nie wyszedł poza granice mapy
+                        target_x = max(0, min(map_width - 1, target_x))
+                        target_y = max(0, min(map_height - 1, target_y))
+                        
+                        self.target = Position(target_x, target_y)
                         self.path = []
 
             elif current_state == BotState.BUILD_MINE:
@@ -2886,12 +2877,8 @@ class Player:
                                 break
                         
                         # Jeśli nie widzieliśmy bazy, estymujemy ją na podstawie symetrii naszej bazy
-                        if not enemy_core_pos and self.allied_core_tiles:
-                            core_xs = [p.x for p in self.allied_core_tiles]
-                            core_ys = [p.y for p in self.allied_core_tiles]
-                            my_cx = sum(core_xs) // len(core_xs)
-                            my_cy = sum(core_ys) // len(core_ys)
-                            enemy_core_pos = Position(map_width - 1 - my_cx, map_height - 1 - my_cy)
+                        if not enemy_core_pos and self.my_core_center:
+                            enemy_core_pos = Position(map_width - 1 - self.my_core_cx, map_height - 1 - self.my_core_cy)
                             
                         # Ostateczność (rdzenie zniszczone) -> celujemy w środek mapy
                         if not enemy_core_pos:
