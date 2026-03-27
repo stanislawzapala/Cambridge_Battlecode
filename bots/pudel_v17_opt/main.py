@@ -88,12 +88,12 @@ COST_MAPPING = {
             'foundry': FOUNDRY_BASE_COST,
             'builder_bot': BUILDER_BOT_BASE_COST
         }
-OUR_NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
+NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
 BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
                                        EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
                                        EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
                                        EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE}
-LATE_STATES = {BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER}
+LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
 JUNK_ENEMY_BUILDINGS = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}
 VIP_FRIENDLY = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER}
 
@@ -608,7 +608,7 @@ class Player:
                     b_team = ct.get_team(b_id_on_target)
                     if (b_id_on_target is not None
                             and b_team == my_team
-                            and ct.get_entity_type(b_id_on_target) in OUR_NETWORK):
+                            and ct.get_entity_type(b_id_on_target) in NETWORK):
                         return False
                     
                     # Nie strzelamy w harvestera, z którego się zasilamy
@@ -676,9 +676,9 @@ class Player:
                     self.target = Position(map_width // 2, map_height // 2)
                 elif current_round in (8, 9):
                     self.bot_state = BotState.ROAD_LAYER
-                elif current_round >= 300:
+                elif current_round >= 150:
                     # Typ bota wyznaczany z tury spawnu modulo 4 (bez pamięci współdzielonej)
-                    type_index = ((current_round - 300) // 12) % 5
+                    type_index = ((current_round - 150) // 12) % 6
                     self.bot_state = LATE_STATES[type_index]
                 else:
                     self.bot_state = BotState.EXPLORE
@@ -2880,7 +2880,7 @@ class Player:
                         
                         # Przeszukujemy pełną pamięć budynków (bo drogi/taśmociągi wroga nie wchodzą do VIP Facts)
                         for pos, (b_type, b_team, _) in self.buildings.items():
-                            if b_team == enemy_team and b_type in WALKABLE_TYPES:
+                            if b_team == enemy_team and b_type in NETWORK:
                                 d = my_pos.distance_squared(pos)
                                 if d < best_dist:
                                     best_dist = d
@@ -2895,11 +2895,32 @@ class Player:
                             # 3. Brak wrogich celów w pamięci -> losowy patrol po mapie
                             target_is_wall = (self.target and self.memory.get(self.target) in HARD_OBSTACLES)
                             if not self.target or my_pos == self.target or target_is_wall:
-                                self.target = Position(
-                                    random.randint(0, map_width - 1),
-                                    random.randint(0, map_height - 1)
-                                )
-                                self.path = []              
+                                # Zamiast wędrować wszędzie, idziemy na terytorium wroga
+                                if self.allied_core_tiles:
+                                    # 1. Środek naszej bazy
+                                    core_xs = [p.x for p in self.allied_core_tiles]
+                                    core_ys = [p.y for p in self.allied_core_tiles]
+                                    my_cx = sum(core_xs) // len(core_xs)
+                                    my_cy = sum(core_ys) // len(core_ys)
+                                    
+                                    # 2. Obliczenie wrogiej bazy (symetria środkowa)
+                                    enemy_cx = map_width - 1 - my_cx
+                                    enemy_cy = map_height - 1 - my_cy
+                                    
+                                    # 3. Losujemy cel, ale TYLKO w "strefie wroga" (obszar wielkości 2/3 mapy wokół jego Core)
+                                    rad_x = map_width // 3
+                                    rad_y = map_height // 3
+                                    
+                                    rx = random.randint(max(0, enemy_cx - rad_x), min(map_width - 1, enemy_cx + rad_x))
+                                    ry = random.randint(max(0, enemy_cy - rad_y), min(map_height - 1, enemy_cy + rad_y))
+                                    
+                                    self.target = Position(rx, ry)
+                                else:
+                                    # Awaryjnie (jeśli Core zostało całkowicie zniszczone)
+                                    self.target = Position(
+                                        random.randint(0, map_width - 1),
+                                        random.randint(0, map_height - 1)
+                                    )              
 
 
 
