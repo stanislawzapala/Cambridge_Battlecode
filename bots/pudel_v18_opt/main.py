@@ -67,7 +67,7 @@ passable_types = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONV
 
 # --- GLOBALNE ZBIORY OPTYMALIZACYJNE  ---
 HARD_OBSTACLES = {Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
-WALKABLE_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD, EntityType.BRIDGE}
+WALKABLE_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD, EntityType.BRIDGE, EntityType.SPLITTER}
 PASSABLE_TYPES_SET = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.MARKER, EntityType.SPLITTER}
 BUILDING_STATES = {BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER}
 WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
@@ -577,7 +577,7 @@ class Player:
                         ct.spawn_builder(spawn_pos)
                         self.replacement_bots_pending -= 1
                         self.spawned_bots_count += 1
-                elif current_round >= 300 and (current_round - 300) % 12 == 0 and self.spawned_bots_count < 20:
+                elif current_round >= 150 and (current_round - 150) % 12 == 0 and self.spawned_bots_count < 20:
                     # Bot specjalny — typ wyznaczany przez numer iteracji modulo 5
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
@@ -2860,7 +2860,7 @@ class Player:
                 b_id_here = ct.get_tile_building_id(my_pos)
                 if b_id_here is not None and ct.get_team(b_id_here) == enemy_team:
                     b_type_here = ct.get_entity_type(b_id_here)
-                    if b_type_here in WALKABLE_TYPES:
+                    if b_type_here in NETWORK:
                         
                         # Jesteśmy na wrogiej infrastrukturze! Niszczymy.
                         if ct.get_action_cooldown() == 0 and ct.can_fire(my_pos):
