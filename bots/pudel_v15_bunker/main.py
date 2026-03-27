@@ -1125,15 +1125,24 @@ class Player:
                                 best_dist = d
                                 best_enemy_harv = pos
                     if best_enemy_harv:
-                        self.target = best_enemy_harv
-                        self.path = []
-                        self.kamikaze_sentinel_pos = None
-                        self.kamikaze_sentinel_dir = None
+                        if self.target != best_enemy_harv:
+                            self.target = best_enemy_harv
+                            self.path = []
+                            self.kamikaze_sentinel_pos = None
+                            self.kamikaze_sentinel_dir = None
                     else:
-                        # Brak celu — stań się KAMIKAZE znowu
-                        self.bot_state = BotState.KAMIKAZE
-                        self.target = None
-                        self.path = []
+                        # Brak wroga w pamięci. Przechodzimy w tryb aktywnego szukania (zwiad).
+                        target_is_wall = (self.target and self.memory.get(self.target) in HARD_OBSTACLES)
+                        
+                        # Losujemy nowy cel, jeśli nie mamy żadnego, jeśli dotarliśmy na miejsce, lub jeśli cel to ściana
+                        if not self.target or my_pos == self.target or target_is_wall:
+                            self.target = Position(
+                                random.randint(0, map_width - 1),
+                                random.randint(0, map_height - 1)
+                            )
+                            self.path = []
+                            self.kamikaze_sentinel_pos = None
+                            self.kamikaze_sentinel_dir = None
 
                 if self.target and self.bot_state == BotState.KAMIKAZE:
                     harv_pos = self.target
