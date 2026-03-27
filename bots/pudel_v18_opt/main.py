@@ -568,7 +568,7 @@ class Player:
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW 
-            number_of_bots_to_spawn = 3 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
+            number_of_bots_to_spawn = 2 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
             # PLUS boty specjalne od tury 300 co 12 tur, max 15 botów
             if ct.get_action_cooldown() == 0:
                 if self.replacement_bots_pending > 0:
@@ -590,7 +590,9 @@ class Player:
                         ct.spawn_builder(spawn_pos)
                         self.spawned_bots_count += 1
             return
-        
+
+            if current_round % 50 == 0 and number_of_bots_to_spawn < 4:
+                number_of_bots_to_spawn += 1
 
 
         # ==========================================
@@ -2875,52 +2877,61 @@ class Player:
                 if not is_attacking:
                     # Szukamy nowego celu na starcie, albo po dotarciu na puste pole, albo co 10 tur (żeby namierzyć coś bliżej)
                     if not self.target or self.target == my_pos or current_round % 5 == 0:
-                        best_junk_pos = None
-                        best_dist = float('inf')
+                        # --- USTALAMY POZYCJĘ BAZY WROGA ---
+                        enemy_core_pos = None
+                        # Najpierw sprawdzamy, czy przypadkiem nie mamy fizycznej wrogiej bazy w pamięci
+                        for p, (b_t, b_tm, _) in self.buildings.items():
+                            if b_t == EntityType.CORE and b_tm == enemy_team:
+                                enemy_core_pos = p
+                                break
                         
-                        # Przeszukujemy pełną pamięć budynków (bo drogi/taśmociągi wroga nie wchodzą do VIP Facts)
+                        # Jeśli nie widzieliśmy bazy, estymujemy ją na podstawie symetrii naszej bazy
+                        if not enemy_core_pos and self.allied_core_tiles:
+                            core_xs = [p.x for p in self.allied_core_tiles]
+                            core_ys = [p.y for p in self.allied_core_tiles]
+                            my_cx = sum(core_xs) // len(core_xs)
+                            my_cy = sum(core_ys) // len(core_ys)
+                            enemy_core_pos = Position(map_width - 1 - my_cx, map_height - 1 - my_cy)
+                            
+                        # Ostateczność (rdzenie zniszczone) -> celujemy w środek mapy
+                        if not enemy_core_pos:
+                            enemy_core_pos = Position(map_width // 2, map_height // 2)
+
+                        # --- SZUKAMY OPTYMALNEGO CELU ---
+                        best_junk_pos = None
+                        best_score = float('inf')
+                        
+                        # Przeszukujemy pełną pamięć budynków
                         for pos, (b_type, b_team, _) in self.buildings.items():
                             if b_team == enemy_team and b_type in NETWORK:
-                                d = my_pos.distance_squared(pos)
-                                if d < best_dist:
-                                    best_dist = d
+                                dist_to_bot = my_pos.distance_squared(pos)
+                                dist_to_enemy_core = pos.distance_squared(enemy_core_pos)
+                                
+                                # FUNKCJA KOSZTU: dystans do wrogiej bazy ma wagę 2x, dystans do bota 1x.
+                                score = dist_to_bot + (dist_to_enemy_core * 2)
+                                
+                                if score < best_score:
+                                    best_score = score
                                     best_junk_pos = pos
                                     
                         if best_junk_pos:
-                            # Znaleźliśmy wrogi taśmociąg/drogę!
+                            # Znaleźliśmy wrogi taśmociąg/drogę o najlepszym stosunku bliskości bazy wroga!
                             if self.target != best_junk_pos:
                                 self.target = best_junk_pos
                                 self.path = []
                         elif not self.target or self.target == my_pos:
-                            # 3. Brak wrogich celów w pamięci -> losowy patrol po mapie
+                            # 3. Brak wrogich celów w pamięci -> losowy patrol po terytorium wroga
                             target_is_wall = (self.target and self.memory.get(self.target) in HARD_OBSTACLES)
                             if not self.target or my_pos == self.target or target_is_wall:
-                                # Zamiast wędrować wszędzie, idziemy na terytorium wroga
-                                if self.allied_core_tiles:
-                                    # 1. Środek naszej bazy
-                                    core_xs = [p.x for p in self.allied_core_tiles]
-                                    core_ys = [p.y for p in self.allied_core_tiles]
-                                    my_cx = sum(core_xs) // len(core_xs)
-                                    my_cy = sum(core_ys) // len(core_ys)
-                                    
-                                    # 2. Obliczenie wrogiej bazy (symetria środkowa)
-                                    enemy_cx = map_width - 1 - my_cx
-                                    enemy_cy = map_height - 1 - my_cy
-                                    
-                                    # 3. Losujemy cel, ale TYLKO w "strefie wroga" (obszar wielkości 2/3 mapy wokół jego Core)
-                                    rad_x = map_width // 3
-                                    rad_y = map_height // 3
-                                    
-                                    rx = random.randint(max(0, enemy_cx - rad_x), min(map_width - 1, enemy_cx + rad_x))
-                                    ry = random.randint(max(0, enemy_cy - rad_y), min(map_height - 1, enemy_cy + rad_y))
-                                    
-                                    self.target = Position(rx, ry)
-                                else:
-                                    # Awaryjnie (jeśli Core zostało całkowicie zniszczone)
-                                    self.target = Position(
-                                        random.randint(0, map_width - 1),
-                                        random.randint(0, map_height - 1)
-                                    )              
+                                # Obszar wielkości 1/3 mapy dookoła estymowanego punktu wrogiej bazy
+                                rad_x = map_width // 3
+                                rad_y = map_height // 3
+                                
+                                rx = random.randint(max(0, enemy_core_pos.x - rad_x), min(map_width - 1, enemy_core_pos.x + rad_x))
+                                ry = random.randint(max(0, enemy_core_pos.y - rad_y), min(map_height - 1, enemy_core_pos.y + rad_y))
+                                
+                                self.target = Position(rx, ry)
+                                self.path = []          
 
 
 
