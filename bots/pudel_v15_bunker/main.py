@@ -1130,8 +1130,8 @@ class Player:
                         self.kamikaze_sentinel_pos = None
                         self.kamikaze_sentinel_dir = None
                     else:
-                        # Brak celu — stań się REPAIRMAN
-                        self.bot_state = BotState.REPAIRMAN
+                        # Brak celu — stań się KAMIKAZE znowu
+                        self.bot_state = BotState.KAMIKAZE
                         self.target = None
                         self.path = []
 
@@ -1220,7 +1220,7 @@ class Player:
                                 if ct.can_build_sentinel(spos, sdir):
                                     ct.build_sentinel(spos, sdir)
                                     # Misja zakończona
-                                    self.bot_state = BotState.REPAIRMAN
+                                    self.bot_state = BotState.KAMIKAZE
                                     self.target = None
                                     self.kamikaze_sentinel_pos = None
                             elif my_pos.distance_squared(spos) > 2:
@@ -2758,7 +2758,7 @@ class Player:
                     self.state = BotState.EXPLORE
                     self.target = None
                     self.path = []  
-                    
+
                 if self.assigned_ore is None:
                     if not self.target:
                         self.target = Position(map_width // 2, map_height // 2)
