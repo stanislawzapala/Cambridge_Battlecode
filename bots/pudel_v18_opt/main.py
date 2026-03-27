@@ -98,8 +98,6 @@ BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
 LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
 JUNK_ENEMY_BUILDINGS = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}
 VIP_FRIENDLY = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER}
-NETWORK_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                 EntityType.BRIDGE, EntityType.SPLITTER, EntityType.HARVESTER}
 NETWORK_TYPES_S = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
                                    EntityType.BRIDGE, EntityType.SPLITTER}
 
@@ -575,7 +573,7 @@ class Player:
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW 
-            number_of_bots_to_spawn = 2 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
+            number_of_bots_to_spawn = 3 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
             # PLUS boty specjalne od tury 300 co 12 tur, max 15 botów
             if ct.get_action_cooldown() == 0:
                 if self.replacement_bots_pending > 0:
