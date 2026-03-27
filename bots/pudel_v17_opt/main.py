@@ -93,7 +93,14 @@ BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
                                        EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
                                        EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
                                        EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE}
-LATE_STATES = [BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
+LATE_STATES = {BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER}
+JUNK_ENEMY_BUILDINGS = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}
+VIP_FRIENDLY = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER}
+
+
+
+
+
 
 
 class Player:
@@ -713,13 +720,11 @@ class Player:
                     
                     # 1. WSZYSTKIE budynki wroga
                     if b_team == enemy_team:
-                        JUNK_ENEMY_BUILDINGS = [EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE]
                         if b_type not in JUNK_ENEMY_BUILDINGS:
                             self.vip_facts[pos] = (real_env, b_type, True)
                     
                     # 2. NASZE strategiczne budynki (Kopalnie, Wieże, Huty)
                     elif b_team == my_team:
-                        VIP_FRIENDLY = [EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER]
                         if b_type in VIP_FRIENDLY:
                             self.vip_facts[pos] = (real_env, b_type, False)
 
