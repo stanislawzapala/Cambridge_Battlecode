@@ -630,7 +630,7 @@ class Player:
                     BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
                                        EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
                                        EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                       EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER}
+                                       EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE}
                     for nearby_id in ct.get_nearby_entities():
                         if ct.get_entity_type(nearby_id) == EntityType.MARKER:
                             continue
@@ -877,7 +877,7 @@ class Player:
             # 2b. OBSŁUGA SENTINELI WOKÓŁ CORE (od tury 300)
             # ==========================================
             # Budowa Foundry (SMELTER) ma pierwszeństwo
-            if current_round >= 300 and self.allied_core_tiles and self.bot_state != BotState.SMELTER:
+            if current_round >= 150 and self.allied_core_tiles and self.bot_state != BotState.SMELTER:
                 core_xs = [p.x for p in self.allied_core_tiles]
                 core_ys = [p.y for p in self.allied_core_tiles]
                 cx = (min(core_xs) + max(core_xs)) // 2
