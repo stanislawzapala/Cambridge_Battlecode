@@ -2754,7 +2754,11 @@ class Player:
                 # ==========================================
                 # BUILD_BUNKER: Tworzy ufortyfikowaną placówkę na środku mapy
                 # ==========================================
-                
+                if current_round >= 60:
+                    self.state = BotState.EXPLORE
+                    self.target = None
+                    self.path = []  
+                    
                 if self.assigned_ore is None:
                     if not self.target:
                         self.target = Position(map_width // 2, map_height // 2)
@@ -2836,10 +2840,7 @@ class Player:
                                             ct.destroy(sn_target)
                                         elif self._can_afford_build(ct, 'sentinel') and ct.can_build_sentinel(sn_target, sn_dir):
                                             ct.build_sentinel(sn_target, sn_dir)
-                if current_round >= 60:
-                    self.state = BotState.EXPLORE
-                    self.target = None
-                    self.path = []            
+                          
 
 
 
