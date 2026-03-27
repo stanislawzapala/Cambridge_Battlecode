@@ -93,6 +93,7 @@ BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
                                        EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
                                        EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
                                        EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE}
+LATE_STATES = [BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
 
 
 class Player:
@@ -679,8 +680,7 @@ class Player:
                 elif current_round >= 300:
                     # Typ bota wyznaczany z tury spawnu modulo 4 (bez pamięci współdzielonej)
                     type_index = ((current_round - 300) // 12) % 5
-                    late_states = [BotState.KAMIKAZE, BotState.EXPLORE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
-                    self.bot_state = late_states[type_index]
+                    self.bot_state = LATE_STATES[type_index]
                 else:
                     self.bot_state = BotState.EXPLORE
                 
