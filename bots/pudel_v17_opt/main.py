@@ -88,6 +88,11 @@ COST_MAPPING = {
             'foundry': FOUNDRY_BASE_COST,
             'builder_bot': BUILDER_BOT_BASE_COST
         }
+OUR_NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
+BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
+                                       EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
+                                       EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+                                       EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE}
 
 
 class Player:
@@ -596,7 +601,6 @@ class Player:
             # Priorytet celów: 1. boty wroga, 2. budynki wroga (nie drogi), 3. drogi wroga.
             # NIE strzelamy gdy cel stoi na naszym conveyorze/moście/splitterze.
             if ct.get_action_cooldown() == 0 and ct.get_ammo_amount() > 0:
-                OUR_NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
                 my_dir = ct.get_direction()
 
                 def _sentinel_can_fire(target_pos):
@@ -629,10 +633,7 @@ class Player:
                         break
                 # Prio 2: budynki wroga (nie drogi, nie markery), ale nie strzelamy w harvestera obok wieżyczki
                 if not fired:
-                    BUILDINGS_PRIO2 = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
-                                       EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
-                                       EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
-                                       EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE}
+                    
                     for nearby_id in ct.get_nearby_entities():
                         if ct.get_entity_type(nearby_id) == EntityType.MARKER:
                             continue
