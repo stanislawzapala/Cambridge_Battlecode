@@ -118,7 +118,7 @@ COST_MAPPING = {
 }
 
 # PRODUKCJA PROBEK
-TURNS_TO_SPAWN = {1, 2, 10, 25, 50, 100}
+TURNS_TO_SPAWN = {1, 2, 3, 4, 10, 25, 50, 100}
 
 
 
@@ -701,7 +701,7 @@ class Player:
                 self.repairman_prev_hp = ct.get_hp()
 
                 # Początkowy stan — zależy od tury spawnu
-                if current_round < 2:
+                if current_round < 3:
                     self.bot_state = BotState.HARRAS
                     self.target = Position(map_width // 2, map_height // 2)
                 elif current_round == 50:
@@ -2884,10 +2884,6 @@ class Player:
                                 enemy_core_pos = p
                                 break
                         
-                        # Jeśli nie widzieliśmy bazy, estymujemy ją na podstawie symetrii naszej bazy
-                        if not enemy_core_pos and self.my_core_center:
-                            enemy_core_pos = Position(map_width - 1 - self.my_core_cx, map_height - 1 - self.my_core_cy)
-                            
                         # Ostateczność (rdzenie zniszczone) -> celujemy w środek mapy
                         if not enemy_core_pos:
                             enemy_core_pos = Position(map_width // 2, map_height // 2)
@@ -2899,16 +2895,27 @@ class Player:
                         # Przeszukujemy pełną pamięć budynków
                         for pos, (b_type, b_team, _) in self.buildings.items():
                             if b_team == enemy_team and b_type in NETWORK:
-                                dist_to_bot = my_pos.distance_squared(pos)
-                                dist_to_enemy_core = pos.distance_squared(enemy_core_pos)
-                                
-                                # FUNKCJA KOSZTU: dystans do wrogiej bazy ma wagę 2x, dystans do bota 1x.
-                                score = dist_to_bot + (dist_to_enemy_core * 2)
-                                
-                                if score < best_score:
-                                    best_score = score
-                                    best_junk_pos = pos
+                                # Jeśli widzimy wrogą bazę lub ją widzieliśmy, to priorytetem jest wszystko obok niej albo sąsiedztwo harvestera
+                                if enemy_core_pos:
+                                    dist_to_bot = my_pos.distance_squared(pos)
+                                    dist_to_enemy_core = pos.distance_squared(enemy_core_pos)
                                     
+                                    # FUNKCJA KOSZTU: dystans do wrogiej bazy ma wagę 100x, dystans do bota 1x.
+                                    score = dist_to_bot + (dist_to_enemy_core * 100)
+                                    
+                                    if score < best_score:
+                                        best_score = score
+                                        best_junk_pos = pos
+                                else:
+                                    dist_to_bot = my_pos.distance_squared(pos)
+                                    
+                                    # FUNKCJA KOSZTU: szukamy najdalszej drogi od bota, licząc, że znajdzie w ten sposób bazę.
+                                    score = -dist_to_bot 
+                                    
+                                    if score < best_score:
+                                        best_score = score
+                                        best_junk_pos = pos
+                                        
                         if best_junk_pos:
                             # Znaleźliśmy wrogi taśmociąg/drogę o najlepszym stosunku bliskości bazy wroga!
                             if self.target != best_junk_pos:
@@ -2933,6 +2940,13 @@ class Player:
             # ==========================================
             # 3. RUCH (NOGI) - Wykonuje się tylko, gdy mamy gdzie iść
             # ==========================================
+            target_env = self.memory.get(self.target)
+            
+            # BEZPIECZNIK - ŚCIANA
+            if target_env == Environment.WALL:
+                self.target = None
+                self.path = []
+
             future_pos = my_pos
             target_pos = self.target
             
