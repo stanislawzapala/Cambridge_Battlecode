@@ -118,7 +118,7 @@ COST_MAPPING = {
 }
 
 # PRODUKCJA PROBEK
-TURNS_TO_SPAWN = {1, 2, 3, 4, 10, 25, 50, 100}
+TURNS_TO_SPAWN = {1, 2, 3, 20, 50, 100, 150}
 
 
 
@@ -701,10 +701,10 @@ class Player:
                 self.repairman_prev_hp = ct.get_hp()
 
                 # Początkowy stan — zależy od tury spawnu
-                if current_round < 3:
+                if current_round < 2:
                     self.bot_state = BotState.HARRAS
                     self.target = Position(map_width // 2, map_height // 2)
-                elif current_round == 50:
+                elif current_round == 20:
                     self.bot_state = BotState.BUILD_BUNKER
                 elif current_round == 100:
                     self.bot_state = BotState.FORTIFIER
@@ -2884,10 +2884,6 @@ class Player:
                                 enemy_core_pos = p
                                 break
                         
-                        # Ostateczność (rdzenie zniszczone) -> celujemy w środek mapy
-                        if not enemy_core_pos:
-                            enemy_core_pos = Position(map_width // 2, map_height // 2)
-
                         # --- SZUKAMY OPTYMALNEGO CELU ---
                         best_junk_pos = None
                         best_score = float('inf')
@@ -2922,7 +2918,7 @@ class Player:
                                 self.target = best_junk_pos
                                 self.path = []
                         elif not self.target or self.target == my_pos:
-                            # 3. Brak wrogich celów w pamięci -> losowy patrol po terytorium wroga
+                            # 3. Brak wrogich celów w pamięci -> losowy patrol
                             target_is_wall = (self.target and self.memory.get(self.target) in HARD_OBSTACLES)
                             if not self.target or my_pos == self.target or target_is_wall:
                                 # Obszar wielkości 1/3 mapy dookoła estymowanego punktu wrogiej bazy
@@ -2949,7 +2945,7 @@ class Player:
 
             future_pos = my_pos
             target_pos = self.target
-            
+
             # Wizualizacja
             if target_pos:
                 try:
