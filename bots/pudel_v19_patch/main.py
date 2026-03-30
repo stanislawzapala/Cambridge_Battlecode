@@ -616,7 +616,8 @@ class Player:
                 number_of_bots_to_spawn += 1
 
             # Zamiana Axionite na Titanium
-            if ct.get_
+            if my_ax > 50:
+                ct.convert(my_ax - 50)
 
         # ==========================================
         # 2. LOGIKA SENTINELA
