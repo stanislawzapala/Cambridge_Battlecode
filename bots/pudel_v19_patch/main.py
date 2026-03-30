@@ -2892,8 +2892,8 @@ class Player:
                         for pos, (b_type, b_team, _) in self.buildings.items():
                             if b_team == enemy_team and b_type in NETWORK:
                                 # Jeśli widzimy wrogą bazę lub ją widzieliśmy, to priorytetem jest wszystko obok niej albo sąsiedztwo harvestera
+                                dist_to_bot = my_pos.distance_squared(pos)
                                 if enemy_core_pos:
-                                    dist_to_bot = my_pos.distance_squared(pos)
                                     dist_to_enemy_core = pos.distance_squared(enemy_core_pos)
                                     
                                     # FUNKCJA KOSZTU: dystans do wrogiej bazy ma wagę 100x, dystans do bota 1x.
@@ -2903,10 +2903,10 @@ class Player:
                                         best_score = score
                                         best_junk_pos = pos
                                 else:
-                                    dist_to_bot = my_pos.distance_squared(pos)
+                                    dist_to_my_core = pos.distance_squared(self.my_core_center)
                                     
                                     # FUNKCJA KOSZTU: szukamy najdalszej drogi od bota, licząc, że znajdzie w ten sposób bazę.
-                                    score = -dist_to_bot 
+                                    score = - dist_to_bot - dist_to_my_core
                                     
                                     if score < best_score:
                                         best_score = score
