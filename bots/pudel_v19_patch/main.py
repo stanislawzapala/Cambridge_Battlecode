@@ -117,6 +117,11 @@ COST_MAPPING = {
     'builder_bot': BUILDER_BOT_BASE_COST
 }
 
+# PRODUKCJA PROBEK
+TURNS_TO_SPAWN = {1, 2, 10, 25, 50, 100}
+
+
+
 
 
 
@@ -131,11 +136,11 @@ class Player:
         self.my_core_cy: int = 0
         
         # CORE
+        self.number_of_bots_to_spawn: int = 0
         self.spawned_bots_count: int = 0
+        self.bot_late_spawn_index: int = 0
         self.starting_protocol: bool = False
         self.core_facts_to_report: list = []
-        self.replacement_bots_pending: int = 0
-        self.bot_late_spawn_index: int = 0
         
         # --- PAMIĘĆ PROBKI ---
         self.memory: dict[Position, Environment] = {}
@@ -589,20 +594,16 @@ class Player:
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW 
-            number_of_bots_to_spawn = 0 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
-            # PLUS boty specjalne od tury 300 co 12 tur, max 15 botów
-            TURNS_TO_SPAWN = {1, 2, 50, 100}
+            # PLUS boty specjalne od tury 300 co 12 tur, max 20 botów
+            
+            if current_round in TURNS_TO_SPAWN:
+                self.number_of_bots_to_spawn += 1
+
             if ct.get_action_cooldown() == 0:
                 if current_round in TURNS_TO_SPAWN:
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
-                        self.spawned_bots_count += 1
-                if self.replacement_bots_pending > 0:
-                    spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
-                    if ct.can_spawn(spawn_pos):
-                        ct.spawn_builder(spawn_pos)
-                        self.replacement_bots_pending -= 1
                         self.spawned_bots_count += 1
                 elif current_round >= 150 and (current_round - 150) % 12 == 0 and self.spawned_bots_count < 20:
                     # Bot specjalny — typ wyznaczany przez numer iteracji modulo 5
@@ -611,15 +612,12 @@ class Player:
                         ct.spawn_builder(spawn_pos)
                         self.bot_late_spawn_index += 1
                         self.spawned_bots_count += 1
-                elif self.spawned_bots_count < number_of_bots_to_spawn:
+                elif self.spawned_bots_count < self.number_of_bots_to_spawn:
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
                         ct.spawn_builder(spawn_pos)
                         self.spawned_bots_count += 1
             return
-
-            if current_round % 50 == 0 and number_of_bots_to_spawn < 4:
-                number_of_bots_to_spawn += 1
 
             # Zamiana Axionite na Titanium
             if my_ax > 50:
