@@ -589,9 +589,15 @@ class Player:
             self.enemy_roads_near_core = current_enemy_roads
 
             # C) PRODUKCJA BOTÓW 
-            number_of_bots_to_spawn = 3 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
+            number_of_bots_to_spawn = 0 # dostosowujemy skalę spawnu do wielkości mapy - dopracować obliczenie optymalnej liczby botów
             # PLUS boty specjalne od tury 300 co 12 tur, max 15 botów
+            TURNS_TO_SPAWN = {1, 2, 50, 100}
             if ct.get_action_cooldown() == 0:
+                if current_round in TURNS_TO_SPAWN:
+                    spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
+                    if ct.can_spawn(spawn_pos):
+                        ct.spawn_builder(spawn_pos)
+                        self.spawned_bots_count += 1
                 if self.replacement_bots_pending > 0:
                     spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
                     if ct.can_spawn(spawn_pos):
@@ -698,11 +704,11 @@ class Player:
 
                 # Początkowy stan — zależy od tury spawnu
                 if current_round < 2:
-                    self.bot_state = BotState.BUILD_BUNKER
+                    self.bot_state = BotState.HARRAS
                     self.target = Position(map_width // 2, map_height // 2)
-                elif current_round in (8, 9):
-                    self.bot_state = BotState.ROAD_LAYER
                 elif current_round == 50:
+                    self.bot_state = BotState.BUILD_BUNKER
+                elif current_round == 100:
                     self.bot_state = BotState.FORTIFIER
                 elif current_round >= 150:
                     # Typ bota wyznaczany z tury spawnu modulo 4 (bez pamięci współdzielonej)
@@ -1874,7 +1880,6 @@ class Player:
                     CLAIM_TTL = 20
                     candidates = {}
                     
-
                     for pos, (env, b_type, is_enemy) in self.vip_facts.items():
                         if env not in ORES:
                             continue
@@ -2975,7 +2980,7 @@ class Player:
                             self.path = []
                             break
                 # HAMULEC: Zatrzymujemy się krok przed celem TYLKO, gdy idziemy budować.
-                if not is_building or my_pos.distance_squared(target_pos) > 1:
+                if not is_building or my_pos.distance_squared(target_pos) > 1 or self.bot_state == BotState.HARRAS:
                     
                     for _ in range(2): 
                         if not self.path: 
