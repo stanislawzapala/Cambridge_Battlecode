@@ -704,7 +704,7 @@ class Player:
 
                 # Początkowy stan — zależy od tury spawnu
                 if current_round < 2:
-                    self.bot_state = BotState.HARRAS
+                    self.bot_state = BotState.EXPLORE
                     self.target = Position(map_width // 2, map_height // 2)
                 elif current_round == 50:
                     self.bot_state = BotState.BUILD_BUNKER
@@ -715,7 +715,7 @@ class Player:
                     type_index = ((current_round - 150) // 12) % 6
                     self.bot_state = LATE_STATES[type_index]
                 else:
-                    self.bot_state = BotState.EXPLORE
+                    self.bot_state = BotState.HARRAS
                 
                 
             
@@ -2948,8 +2948,6 @@ class Player:
 
             # BEZPIECZNIK: jeśli cel nie zmienił się przez 60 tur, resetuj go.
             # Działa tylko w stanach nie-budujących.
-            WANDERING_STATES = {BotState.EXPLORE,  BotState.ROAD_LAYER, BotState.KAMIKAZE, 
-                                BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER}
             if target_pos is not None and self.bot_state in WANDERING_STATES:
                 if self.target_last != target_pos:
                     # Nowy cel — zapamiętaj turę ustawienia
@@ -2964,7 +2962,7 @@ class Player:
                     target_pos = None
 
             # Czy bot idzie budować? (zatrzymuje się krok przed celem, nie wchodzi na nie)
-            is_building = (self.bot_state in [BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER])
+            is_building = (self.bot_state in BUILDING_STATES)
 
             
             if target_pos:
@@ -2972,7 +2970,7 @@ class Player:
                 # UNIWERSALNY ODBLOKOWYWACZ (Ewakuacja z placu budowy)
                 # Jeśli bot ma zbudować coś na polu, na którym właśnie stoi - musi zrobić krok w bok!
                 # =======================================================
-                if is_building and my_pos == target_pos:
+                if (is_building and my_pos.distance_squared(target_pos) > 1) or (not is_building and my_pos != target_pos):
                     for try_dir in DIRECTIONS:
                         if ct.can_move(try_dir):
                             ct.move(try_dir)
