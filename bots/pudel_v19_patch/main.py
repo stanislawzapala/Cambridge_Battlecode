@@ -530,7 +530,8 @@ class Player:
         map_height = ct.get_map_height()
         my_team = ct.get_team()
         enemy_team = Team.B if my_team == Team.A else Team.A
-        
+        scale = ct.get_scale_percent() / 100.0
+        my_tit, my_ax = ct.get_global_resources()
         etype = ct.get_entity_type()
         my_pos = ct.get_position()
         my_id = ct.get_id()
@@ -614,6 +615,8 @@ class Player:
             if current_round % 50 == 0 and number_of_bots_to_spawn < 4:
                 number_of_bots_to_spawn += 1
 
+            # Zamiana Axionite na Titanium
+            if ct.get_
 
         # ==========================================
         # 2. LOGIKA SENTINELA
@@ -1024,11 +1027,7 @@ class Player:
                 # i stara się obudować je drogą dookoła (blokada dostępu dla wroga).
                 # Budowanie drogi (nie obudowywanie) wymaga >= 200 Tytanu.
 
-                titanium, _ = ct.get_global_resources()
-                scale = ct.get_scale_percent() / 100.0
-                # Harvester: 80 Ti bazowo, skalowanie 10%
-                harvester_cost = int(scale * 80)
-                has_titanium = titanium > 1.2 * harvester_cost
+                has_titanium = my_tit > 1.2 * HARVESTER_BASE_COST[0]
 
                 # --- PRIORYTET: obudowywanie złóż widzianych w tym momencie ---
                 # (nie wymaga limitu surowcowego)
@@ -1579,9 +1578,7 @@ class Player:
                             else:
                                 # Wszystkie pola zajęte lub brak dostępu.
                                 # Sprawdź czy to kwestia surowców — jeśli tak, czekaj przy harvesterze
-                                ti_f, _ = ct.get_global_resources()
-                                sent_ti, _ = ct.get_sentinel_cost()
-                                if ti_f < sent_ti:
+                                if my_tit < SENTINEL_BASE_COST[0]:
                                     # Brak surowców — stój przy harvesterze i czekaj
                                     self.target = harv_target
                                     self.path = []
@@ -1715,9 +1712,8 @@ class Player:
                             self.path = []
                         if my_pos.distance_squared(fpos) <= 2 and ct.get_action_cooldown() == 0:
                             # Niszczymy co stoi TYLKO jeśli stać nas na Foundry
-                            ti_avail_s, ax_avail_s = ct.get_global_resources()
-                            foundry_ti, foundry_ax = ct.get_foundry_cost()
-                            can_afford_foundry = (ti_avail_s >= foundry_ti and ax_avail_s >= foundry_ax)
+                            foundry_ti, foundry_ax = FOUNDRY_BASE_COST
+                            can_afford_foundry = (my_tit >= foundry_ti and my_ax >= foundry_ax)
                             f_b_id = ct.get_tile_building_id(fpos) if ct.is_in_vision(fpos) else None
                             if f_b_id is not None and can_afford_foundry and ct.can_destroy(fpos):
                                 ct.destroy(fpos)
@@ -1970,9 +1966,7 @@ class Player:
                         elif at_ore:
                             if ct.get_action_cooldown() == 0:
                                 # Sprawdź czy stać nas na harvester (zanim zniszczymy drogę)
-                                ti_avail, _ = ct.get_global_resources()
-                                harv_ti, _ = ct.get_harvester_cost()
-                                can_afford_harv = ti_avail >= harv_ti
+                                can_afford_harv = my_tit >= HARVESTER_BASE_COST[0]
 
                                 # Jeśli na złożu stoi nasza droga — zniszcz ją TYLKO gdy stać
                                 # na harvestera. Inaczej zostawiamy drogę jako blokadę.
