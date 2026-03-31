@@ -44,6 +44,12 @@ class BotState(Enum):
 # Kierunki (bez CENTRE)
 DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
 ORTHOGONAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
+DIR_DELTAS = {
+                    Direction.NORTH: (0, -1), Direction.SOUTH: (0, 1),
+                    Direction.EAST: (1, 0), Direction.WEST: (-1, 0),
+                    Direction.NORTHEAST: (1, -1), Direction.NORTHWEST: (-1, -1),
+                    Direction.SOUTHEAST: (1, 1), Direction.SOUTHWEST: (-1, 1)
+                }
 
 # --- MAPA I KOMUNIKACJA MIĘDZY BOTAMI ---
 ENV_TO_INT = {Environment.EMPTY: 0, Environment.WALL: 1, Environment.ORE_TITANIUM: 2, Environment.ORE_AXIONITE: 3}
@@ -78,7 +84,6 @@ PASSABLE_TYPES_SET = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_
 
 # 3. STANY BOTÓW (Maszyna stanów)
 BUILDING_STATES = {BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER, BotState.SABOTEUR}
-# Uwaga: Dodałem tu BotState.HARRAS, o którym mówiliśmy wcześniej!
 WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER, BotState.HARRAS}
 LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
 
@@ -747,18 +752,9 @@ class Player:
                             ct.fire(target_pos)
                             break
 
+        
         # ==========================================
-        # 3. LOGIKA GUNNERA (OBROTOWA WIEŻA)
-        # ==========================================
-        elif etype == EntityType.GUNNER:
-            # Gunner strzela w linii prostej. Może się obracać o 45 stopni (koszt 10 Ti).
-            if ct.get_action_cooldown() == 0 and ct.get_ammo_amount() > 0:
-                my_dir = ct.get_direction()
-                my_pos = ct.get_position()
-                my_tit, _ = ct.get_global_resources()
-
-        # ==========================================
-        # 2.5. LOGIKA GUNNERA (OBROTOWA WIEŻA, ZASIĘG 2)
+        # 3. LOGIKA GUNNERA (OBROTOWA WIEŻA, ZASIĘG 2)
         # ==========================================
         elif etype == EntityType.GUNNER:
             # Gunner strzela w linii prostej na max 2 kratki. Przelatuje przez markery.
@@ -774,7 +770,7 @@ class Player:
 
                 # Sprawdzamy wszystkie 8 kierunków
                 for d in DIRECTIONS:
-                    dx, dy = d.delta()
+                    dx, dy = DIR_DELTAS[d]
                     target_in_this_dir = None
                     target_prio = 999
                     
@@ -875,16 +871,16 @@ class Player:
                 self.repairman_prev_hp = ct.get_hp()
 
                 # Początkowy stan — zależy od tury spawnu
-                if current_round < 2:
+                if current_round <= 2:
                     self.bot_state = BotState.HARRAS
                     self.target = Position(map_width // 2, map_height // 2)
-                elif current_round == 20:
+                elif current_round in (20, 21):
                     self.bot_state = BotState.BUILD_BUNKER
-                elif current_round == 100:
+                elif current_round in (100, 101):
                     self.bot_state = BotState.FORTIFIER
                 elif current_round >= 150:
-                    # Typ bota wyznaczany z tury spawnu modulo 4 (bez pamięci współdzielonej)
-                    type_index = ((current_round - 150) // 12) % 6
+                    # Typ bota wyznaczany z tury spawnu modulo 
+                    type_index = ((current_round - 150) // 12) % len(LATE_STATES)
                     self.bot_state = LATE_STATES[type_index]
                 else:
                     self.bot_state = BotState.EXPLORE
@@ -965,7 +961,7 @@ class Player:
                             
                             # B) Aktualizujemy budynki z markera (Zabezpieczenie Timestampem!)
                             known_b = self.buildings.get(m_pos)
-                            last_seen = known_b[2] if known_b else -1
+                            last_seen = known_b[3] if known_b else -1
                             
                             if m_turn > last_seen:
                                 m_team = enemy_team if data['is_enemy'] else my_team
@@ -2153,7 +2149,7 @@ class Player:
 
                     # 1. SANITY CHECK: Czy ktoś nas ubiegł budynkiem?
                     else:
-                        b_type_chk, b_team_chk, _ = self.buildings.get(target_pos, (None, None, -1))
+                        b_type_chk, b_team_chk, _, _ = self.buildings.get(target_pos, (None, None, None, -1))
                         # Droga WROGA na złożu → nie możemy zbudować harvestera, porzuć
                         enemy_road_on_ore = (b_type_chk == EntityType.ROAD and b_team_chk == enemy_team)
                         # Inny budynek (nie marker, nie nasza droga) → pole zajęte
@@ -3314,7 +3310,7 @@ class Player:
                             self.path = []
                             break
                 # HAMULEC: Zatrzymujemy się krok przed celem TYLKO, gdy idziemy budować.
-                if not is_building or my_pos.distance_squared(target_pos) > 1:
+                if my_pos != target_pos and (not is_building or my_pos.distance_squared(target_pos) > 1):
                     
                     for _ in range(2): 
                         if not self.path: 
