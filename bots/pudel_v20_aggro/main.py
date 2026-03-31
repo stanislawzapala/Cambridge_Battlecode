@@ -748,7 +748,122 @@ class Player:
                             break
 
         # ==========================================
-        # 3. LOGIKA PROBY (BUILDER_BOT)
+        # 3. LOGIKA GUNNERA (OBROTOWA WIEŻA)
+        # ==========================================
+        elif etype == EntityType.GUNNER:
+            # Gunner strzela w linii prostej. Może się obracać o 45 stopni (koszt 10 Ti).
+            if ct.get_action_cooldown() == 0 and ct.get_ammo_amount() > 0:
+                my_dir = ct.get_direction()
+                my_pos = ct.get_position()
+                my_tit, _ = ct.get_global_resources()
+
+        # ==========================================
+        # 2.5. LOGIKA GUNNERA (OBROTOWA WIEŻA, ZASIĘG 2)
+        # ==========================================
+        elif etype == EntityType.GUNNER:
+            # Gunner strzela w linii prostej na max 2 kratki. Przelatuje przez markery.
+            # Obrót kosztuje 10 Ti i zmienia kierunek o 45 stopni (1 krok).
+            if ct.get_action_cooldown() == 0 and ct.get_ammo_amount() > 0:
+                my_dir = ct.get_direction()
+                my_pos = ct.get_position()
+                my_tit, _ = ct.get_global_resources()
+
+                best_target = None
+                best_dir = None
+                best_priority = 999  # 1: Bot, 2: Budynek, 3: Droga
+
+                # Sprawdzamy wszystkie 8 kierunków
+                for d in DIRECTIONS:
+                    dx, dy = d.delta()
+                    target_in_this_dir = None
+                    target_prio = 999
+                    
+                    # Gunner ma zasięg 2 pól, więc badamy tylko "krok 1" i "krok 2"
+                    for step in (1, 2):
+                        p = Position(my_pos.x + dx * step, my_pos.y + dy * step)
+                        
+                        # Sprawdzamy czy nie wyszliśmy poza mapę
+                        if not (0 <= p.x < map_width and 0 <= p.y < map_height):
+                            break
+                            
+                        # Pobieramy dane o polu
+                        env = ct.get_tile_env(p) if ct.is_in_vision(p) else self.memory.get(p, Environment.EMPTY)
+                        b_id = ct.get_tile_building_id(p) if ct.is_in_vision(p) else None
+                        bot_id = ct.get_tile_builder_bot_id(p) if ct.is_in_vision(p) else None
+                        
+                        found_solid_obstacle = False
+                        
+                        # 1. Czy na polu stoi BOT? (Zatrzymuje strzał)
+                        if bot_id is not None:
+                            found_solid_obstacle = True
+                            if ct.get_team(bot_id) == enemy_team:
+                                target_in_this_dir = p
+                                target_prio = 1 # Najwyższy priorytet
+                                
+                        # 2. Czy na polu stoi BUDYNEK?
+                        elif b_id is not None:
+                            bt = ct.get_entity_type(b_id)
+                            # Markery ignorujemy (strzał leci przez nie dalej)
+                            if bt != EntityType.MARKER:
+                                found_solid_obstacle = True
+                                if ct.get_team(b_id) == enemy_team:
+                                    # Pomijamy harvestera, jeśli stoi tuż obok (dystans 1), żeby w niego nie strzelać
+                                    if bt == EntityType.HARVESTER and step == 1:
+                                        pass 
+                                    elif bt == EntityType.ROAD:
+                                        target_in_this_dir = p
+                                        target_prio = 3 # Najniższy priorytet
+                                    else:
+                                        target_in_this_dir = p
+                                        target_prio = 2 # Średni priorytet
+                                        
+                        # 3. Czy to twardy teren? (Zatrzymuje strzał)
+                        elif env in HARD_OBSTACLES:
+                            found_solid_obstacle = True
+                            
+                        # Jeśli trafiliśmy na cokolwiek solidnego (bot, budynek, ściana), 
+                        # promień lasera się zatrzymuje - NIE sprawdzamy kratki nr 2 w tym kierunku.
+                        if found_solid_obstacle:
+                            break 
+                            
+                    # Po zbadaniu kierunku sprawdzamy, czy znaleźliśmy lepszy cel
+                    if target_in_this_dir and target_prio < best_priority:
+                        # Warunek obrotu: możemy zmienić cel tylko, jeśli nas na to stać (10 Ti)
+                        if d == my_dir or my_tit >= 10:
+                            best_priority = target_prio
+                            best_target = target_in_this_dir
+                            best_dir = d
+
+                # --- FAZA AKCJI GUNNERA ---
+                if best_target and best_dir:
+                    # Jeśli patrzymy prosto na cel -> OGNIA!
+                    if best_dir == my_dir:
+                        if ct.can_fire(best_target):
+                            ct.fire(best_target)
+                    # Jeśli nie patrzymy na cel -> OBRÓT O 45 STOPNI
+                    else:
+                        # Tarcza zegara, żeby wyliczyć najkrótszą drogę obrotu
+                        dir_order = [
+                            Direction.NORTH, Direction.NORTHEAST, Direction.EAST, 
+                            Direction.SOUTHEAST, Direction.SOUTH, Direction.SOUTHWEST, 
+                            Direction.WEST, Direction.NORTHWEST
+                        ]
+                        idx_curr = dir_order.index(my_dir)
+                        idx_tgt = dir_order.index(best_dir)
+                        
+                        # Sprawdzamy, w którą stronę jest bliżej (w lewo czy w prawo)
+                        diff = (idx_tgt - idx_curr) % 8
+                        if diff <= 4:
+                            next_dir = dir_order[(idx_curr + 1) % 8]  # W prawo (Zgodnie ze wskazówkami)
+                        else:
+                            next_dir = dir_order[(idx_curr - 1) % 8]  # W lewo (Przeciwnie do wskazówek)
+                            
+                        # Silnik zgłosi wyjątek, jeśli spróbujemy obrócić się o więcej niż 1 krok, 
+                        # dlatego przekazujemy wyliczony next_dir (dokładnie 45 stopni obok obecnego)
+                        ct.rotate(next_dir)
+
+        # ==========================================
+        # 4. LOGIKA PROBY (BUILDER_BOT)
         # ==========================================
         elif etype == EntityType.BUILDER_BOT:
             
