@@ -554,6 +554,43 @@ class Player:
         calculated_core_cy = sum(core_ys) // len(core_ys)
         
         return Position(calculated_core_cx, calculated_core_cy)
+    
+    def _estimate_enemy_core_center(self, my_pos: Position):
+        """
+        Inteligentnie estymuje środek bazy 3x3 wroga nawet na podstawie widocznych kafelków.
+        Gdy jest ich mniej niż 5 estymuje o 1 dalej od bota niż wynika ze średniej z kafelków.
+        """
+        if not self.enemy_core_tiles:
+            return
+        
+        xs = [p.x for p in self.enemy_core_tiles]
+        ys = [p.y for p in self.enemy_core_tiles]
+        
+        # Jeśli widzimy pełen rozstaw od brzegu do brzegu (3x3)
+        if len(self.enemy_core_tiles) > 4:
+            self.enemy_core_cx = min(xs) + 1
+            self.enemy_core_cy = min(ys) + 1
+            self.enemy_core_center = Position(self.enemy_core_cx, self.enemy_core_cy)
+            self.enemy_core_seen = True
+            return
+            
+        if self.enemy_core_seen:
+            return # Mamy już idealny środek, nie psujemy
+            
+        # Mamy tylko fragment. Liczymy średnią z tego co widzimy:
+        avg_x = sum(xs) / len(xs)
+        avg_y = sum(ys) / len(ys)
+        
+        # Wypychamy środek bazy o 1 kratkę w stronę ODWROTNĄ niż stoi bot
+        dx = 1 if avg_x > my_pos.x else -1 if avg_x < my_pos.x else 0
+        dy = 1 if avg_y > my_pos.y else -1 if avg_y < my_pos.y else 0
+        
+        est_cx = int(round(avg_x)) + dx
+        est_cy = int(round(avg_y)) + dy
+        
+        self.enemy_core_cx = est_cx
+        self.enemy_core_cy = est_cy
+        self.enemy_core_center = Position(est_cx, est_cy)
 
 
     def _get_8way_dir_to(self, start: Position, target: Position) -> Direction:
@@ -1081,7 +1118,7 @@ class Player:
             # WROGA BAZA
             # 1. Opcja A: Widzimy (lub widzieliśmy) kafelki wrogiego rdzenia na żywo
             if self.enemy_core_tiles and not self.enemy_core_seen:
-                self.enemy_core_center = self._calculate_core_center(self.enemy_core_tiles)
+                self._estimate_enemy_core_center(my_pos)
                 if self.enemy_core_center:
                     self.enemy_core_cx = self.enemy_core_center.x
                     self.enemy_core_cy = self.enemy_core_center.y
@@ -3131,98 +3168,161 @@ class Player:
                         is_action_taken = True
 
                 if not is_action_taken and ct.get_action_cooldown() == 0:
-                    # Szukamy nowego celu gdy starego brak, gdy na nim stoimy, lub okresowo co 5 tur
-                    target_invalid = (self.target and self.memory.get(self.target) in HARD_OBSTACLES)
+                    
+                    # Sprawdzamy, czy nasz dotychczasowy cel nadal istnieje jako obiekt wroga
+                    target_invalid = True
+                    if self.target:
+                        t_type, t_team, _, _ = self.buildings.get(self.target, (None, None, None, -1))
+                        if t_team == enemy_team and (t_type in NETWORK or t_type == EntityType.ROAD):
+                            target_invalid = False
 
-                    if not self.target or my_pos == self.target or target_invalid or current_round % 5 == 0:
-                        
+                    # USUNIĘTE current_round % 5 == 0! Zmieniamy cel TYLKO, jeśli go nie mamy, został zniszczony, albo na nim stoimy.
+                    # Dzięki temu bot jak pitbull wgryza się w ustalony cel i nie tańczy za uciekającym surowcem!
+                    if not self.target or my_pos == self.target or target_invalid:
                         nowy_cel = None
                         zmieniono_stan = False
 
-                            # --- PRIORYTET 1: SABOTAŻ BAZY I ŚLEPYCH KOŃCÓW ---
-                        if self.enemy_core_seen: # było też:  and self.enemy_core_center
-                            kabel_przy_bazie = None
-                            puste_przy_bazie = None
+                        if self.enemy_core_center:
+                            # --- PRIORYTET 0: MOSTY I SIECI WROGA ZASILAJĄCE BAZĘ ---
+                            best_kabel_score = float('inf')
+                            najgrozniejszy_kabel = None
                             
-                            # A) Szukamy pustego miejsca przy bazie pod MUR lub kabla do spalenia
-                            # Skanujemy obszar 5x5 dookoła środka.
-                            for dx in range(-2, 3):
-                                for dy in range(-2, 3):
-                                    # Pomijamy wnętrze bazy (obszar 3x3 to dx i dy w przedziale od -1 do 1)
+                            cx, cy = self.enemy_core_center.x, self.enemy_core_center.y
+                            
+                            for dx in range(-4, 5):
+                                for dy in range(-4, 5):
                                     if abs(dx) <= 1 and abs(dy) <= 1: 
                                         continue
-                                    adj = Position(self.enemy_core_center.x + dx, self.enemy_core_center.y + dy)
-                                    if not (0 <= adj.x < map_width and 0 <= adj.y < map_height): continue
-                                    
-                                    b_type_adj, b_team_adj, b_dir, _ = self.buildings.get(adj, (None, None, None, -1))
-                                    if b_type_adj and b_team_adj == enemy_team and (b_type_adj in NETWORK or b_type_adj == EntityType.ROAD):
-                                        if kabel_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(kabel_przy_bazie):
-                                            kabel_przy_bazie = adj
-                                                                                
-                                    if  self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
-                                        b_info = self.buildings.get(adj)
-                                        is_removable = not b_info or b_info[0] in {None, EntityType.MARKER} or (b_info[0] == EntityType.ROAD and b_info[1] == my_team)
                                         
-                                        if is_removable:
-                                            if puste_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(puste_przy_bazie):
-                                                puste_przy_bazie = adj
-                                            
-                            if kabel_przy_bazie:
-                                nowy_cel = kabel_przy_bazie
-                            elif puste_przy_bazie:
-                                self.bot_state = BotState.SABOTEUR
-                                self.target = puste_przy_bazie
-                                self.sabotage_dir = None # Brak kierunku oznacza Mur
-                                self.path = []
-                                zmieniono_stan = True
+                                    check_pos = Position(cx + dx, cy + dy)
+                                    if not (0 <= check_pos.x < map_width and 0 <= check_pos.y < map_height):
+                                        continue
+                                        
+                                    b_info = self.buildings.get(check_pos)
+                                    if b_info is None:
+                                        continue
+                                        
+                                    b_type_chk, b_team_chk, b_meta_chk, _ = b_info
+                                    
+                                    if b_team_chk == enemy_team and (b_type_chk in NETWORK or b_type_chk == EntityType.ROAD):
+                                        is_feeding_core = False
+                                        
+                                        if b_type_chk == EntityType.BRIDGE and isinstance(b_meta_chk, Position):
+                                            if abs(b_meta_chk.x - cx) <= 1 and abs(b_meta_chk.y - cy) <= 1:
+                                                is_feeding_core = True
+                                                
+                                        elif abs(dx) <= 2 and abs(dy) <= 2:
+                                            if b_type_chk == EntityType.CONVEYOR and isinstance(b_meta_chk, Direction):
+                                                out_pos = check_pos.add(b_meta_chk)
+                                                if abs(out_pos.x - cx) <= 1 and abs(out_pos.y - cy) <= 1:
+                                                    is_feeding_core = True
+                                            else:
+                                                is_feeding_core = True
+                                                
+                                        if is_feeding_core:
+                                            score = my_pos.distance_squared(check_pos)
+                                            if b_type_chk == EntityType.BRIDGE:
+                                                score -= 10000
+                                            else:
+                                                score -= 5000
+                                                
+                                            # ---> FUNKCJA KOSZTU: PREMIA ZA SUROWCE <---
+                                            if ct.is_in_vision(check_pos):
+                                                b_id_target = ct.get_tile_building_id(check_pos)
+                                                if b_id_target is not None:
+                                                    try:
+                                                        if ct.get_stored_resource(b_id_target) is not None:
+                                                            score -= 2000
+                                                    except Exception:
+                                                        pass
+                                                
+                                            if score < best_kabel_score:
+                                                best_kabel_score = score
+                                                najgrozniejszy_kabel = check_pos
+
+                            if najgrozniejszy_kabel:
+                                nowy_cel = najgrozniejszy_kabel
                                 
-                            # B) Jeśli baza zablokowana murem, szukamy ślepych końców z użyciem globalnej pamięci!
-                            if not nowy_cel and not zmieniono_stan:
-                                best_de_score = float('inf')
-                                best_de_pos = None
-                                
-                                for pos, (b_type, b_team, b_meta, _) in self.buildings.items():
-                                    if b_team == enemy_team and b_type in {EntityType.CONVEYOR, EntityType.BRIDGE}:
-                                        out_pos = None
-                                        # Wykorzystujemy nasz b_meta (kierunek taśmy / target mostu)
-                                        if b_type == EntityType.CONVEYOR and isinstance(b_meta, Direction):
-                                            out_pos = pos.add(b_meta)
-                                        elif b_type == EntityType.BRIDGE and isinstance(b_meta, Position):
-                                            out_pos = b_meta
+                            # --- PRIORYTET 1: OBUDOWYWANIE PUSTYCH PÓL MUREM ---
+                            if not nowy_cel:
+                                puste_przy_bazie = None
+                                for dx in range(-2, 3):
+                                    for dy in range(-2, 3):
+                                        if abs(dx) <= 1 and abs(dy) <= 1: 
+                                            continue
+                                        adj = Position(cx + dx, cy + dy)
+                                        if not (0 <= adj.x < map_width and 0 <= adj.y < map_height): continue
+                                        
+                                        if self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
+                                            b_info = self.buildings.get(adj)
+                                            is_removable = not b_info or b_info[0] in {None, EntityType.MARKER} or (b_info[0] == EntityType.ROAD and b_info[1] == my_team)
                                             
-                                        if out_pos and (0 <= out_pos.x < map_width and 0 <= out_pos.y < map_height):
-                                            out_env = self.memory.get(out_pos, Environment.EMPTY)
-                                            if out_env != Environment.WALL:
-                                                out_b_info = self.buildings.get(out_pos)
-                                                if not out_b_info or out_b_info[0] in {None, EntityType.MARKER, EntityType.ROAD}:
-                                                    # Mamy ślepy koniec wrogiej taśmy!
-                                                    score = my_pos.distance_squared(out_pos)
-                                                    if score < best_de_score:
-                                                        best_de_score = score
-                                                        best_de_pos = out_pos
-                                                        
-                                if best_de_pos:
+                                            if is_removable:
+                                                if puste_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(puste_przy_bazie):
+                                                    puste_przy_bazie = adj
+                                                    
+                                if puste_przy_bazie:
                                     self.bot_state = BotState.SABOTEUR
-                                    self.target = best_de_pos
-                                    self.sabotage_dir = self._get_8way_dir_to(best_de_pos, self.enemy_core_center)
+                                    self.target = puste_przy_bazie
+                                    self.sabotage_dir = None
                                     self.path = []
                                     zmieniono_stan = True
 
-                            # C) Niszczenie infrastruktury (jeśli powyższe nie wypaliły) jak najbliżej wrogiej bazy
-                            if not nowy_cel and not zmieniono_stan:
-                                best_score = float('inf')
-                                for pos, (b_type, b_team, _, _) in self.buildings.items():
-                                    if b_team == enemy_team and b_type in NETWORK:
-                                        dist_to_bot = my_pos.distance_squared(pos)
-                                        dist_to_enemy_core = pos.distance_squared(self.enemy_core_center)
-                                        # Priorytet to pola blisko wrogiej bazy (waga 100)
-                                        score = dist_to_bot + (dist_to_enemy_core * 100)
+                        # --- PRIORYTET 2: ŚLEPE KOŃCE ---
+                        if not nowy_cel and not zmieniono_stan:
+                            best_de_score = float('inf')
+                            best_de_pos = None
+                            
+                            for pos, (b_type, b_team, b_meta, _) in self.buildings.items():
+                                if b_team == enemy_team and b_type in {EntityType.CONVEYOR, EntityType.BRIDGE}:
+                                    out_pos = None
+                                    if b_type == EntityType.CONVEYOR and isinstance(b_meta, Direction):
+                                        out_pos = pos.add(b_meta)
+                                    elif b_type == EntityType.BRIDGE and isinstance(b_meta, Position):
+                                        out_pos = b_meta
                                         
-                                        if score < best_score:
-                                            best_score = score
-                                            nowy_cel = pos
+                                    if out_pos and (0 <= out_pos.x < map_width and 0 <= out_pos.y < map_height):
+                                        out_env = self.memory.get(out_pos, Environment.EMPTY)
+                                        if out_env not in HARD_OBSTACLES:
+                                            out_b_info = self.buildings.get(out_pos)
+                                            if not out_b_info or out_b_info[0] in {None, EntityType.MARKER, EntityType.ROAD}:
+                                                score = my_pos.distance_squared(out_pos)
+                                                if score < best_de_score:
+                                                    best_de_score = score
+                                                    best_de_pos = out_pos
+                                                    
+                            if best_de_pos:
+                                self.bot_state = BotState.SABOTEUR
+                                self.target = best_de_pos
+                                self.sabotage_dir = self._get_8way_dir_to(best_de_pos, self.enemy_core_center) if self.enemy_core_center else None
+                                self.path = []
+                                zmieniono_stan = True
 
-                        # --- PRIORYTET 2: GŁĘBOKI ZWIAD (Nie znamy jeszcze bazy) ---
+                        # --- PRIORYTET 3: Niszczenie infrastruktury z dala od bazy + PREMIA ZA SUROWCE ---
+                        if not nowy_cel and not zmieniono_stan:
+                            best_score = float('inf')
+                            for pos, (b_type, b_team, _, _) in self.buildings.items():
+                                if b_team == enemy_team and (b_type in NETWORK or b_type == EntityType.ROAD):
+                                    dist_to_bot = my_pos.distance_squared(pos)
+                                    dist_to_enemy_core = pos.distance_squared(self.enemy_core_center) if self.enemy_core_center else 0
+                                    
+                                    score = dist_to_bot + (dist_to_enemy_core * 10)
+                                    
+                                    # ---> FUNKCJA KOSZTU: PREMIA ZA SUROWCE <---
+                                    if ct.is_in_vision(pos):
+                                        b_id_target = ct.get_tile_building_id(pos)
+                                        if b_id_target is not None:
+                                            try:
+                                                if ct.get_stored_resource(b_id_target) is not None:
+                                                    score -= 2000
+                                            except Exception:
+                                                pass
+                                    
+                                    if score < best_score:
+                                        best_score = score
+                                        nowy_cel = pos
+
+                        # --- PRIORYTET 4: GŁĘBOKI ZWIAD (Nie znamy jeszcze bazy) ---
                         if not nowy_cel and not zmieniono_stan:
                             best_score = float('-inf') # Tutaj szukamy MAX dystansu!
                             my_core_pos = self.my_core_center or Position(map_width//2, map_height//2)
