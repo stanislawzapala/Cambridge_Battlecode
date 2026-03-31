@@ -3061,8 +3061,8 @@ class Player:
 
                 # 1. Atak na cel, jeśli na nim stoimy
                 if self.target and my_pos == self.target:
-                    b_id, b_team, _, _ = self.buildings.get(my_pos, (None, None, None, -1))
-                    if b_id and b_team == enemy_team and b_id in NETWORK:
+                    b_type, b_team, _, _ = self.buildings.get(my_pos, (None, None, None, -1))
+                    if b_type and b_team == enemy_team and b_type in NETWORK:
                         if ct.get_action_cooldown() == 0 and ct.can_fire(my_pos):
                             ct.fire(my_pos)
                         is_action_taken = True
@@ -3214,6 +3214,10 @@ class Player:
                                 rx = random.randint(0, map_width - 1)
                                 ry = random.randint(0, map_height - 1)
                                 nowy_cel = Position(rx, ry)
+                        
+                        if nowy_cel and not zmieniono_stan:
+                            self.target = nowy_cel
+                            self.path = []
 
             elif current_state == BotState.SABOTEUR:
                 # ==========================================
@@ -3222,6 +3226,9 @@ class Player:
                 # ==========================================
                 if not self.target:
                     self.bot_state = BotState.HARRAS
+                elif my_pos == self.target:
+                    pass
+                
                 elif my_pos.distance_squared(self.target) <= 2 and ct.get_action_cooldown() == 0:
                     tp = self.target
                     tp_type, tp_team, _, _ = self.buildings.get(tp, (None, None, None, -1))
