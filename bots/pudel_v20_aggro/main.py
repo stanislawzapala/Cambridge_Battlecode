@@ -865,10 +865,8 @@ class Player:
                     target_in_this_dir = None
                     target_prio = 999
                     
-                    # Gunner ma zasięg euclidean_distance_squared <= 13
-                    # (3 pola w osiach prostopadłych, 2 po przekątnej)
-                    step = 1
-                    while (dx * step)**2 + (dy * step)**2 <= 13:
+                    # Gunner ma zasięg 2 pól, więc badamy tylko "krok 1" i "krok 2"
+                    for step in (1, 2):
                         p = Position(my_pos.x + dx * step, my_pos.y + dy * step)
                         
                         # Sprawdzamy czy nie wyszliśmy poza mapę
@@ -924,17 +922,33 @@ class Player:
                             best_target = target_in_this_dir
                             best_dir = d
 
-                # FAZA AKCJI GUNNERA 
+                # --- FAZA AKCJI GUNNERA ---
                 if best_target and best_dir:
+                    # Jeśli patrzymy prosto na cel -> OGNIA!
                     if best_dir == my_dir:
                         if ct.can_fire(best_target):
                             ct.fire(best_target)
+                    # Jeśli nie patrzymy na cel -> OBRÓT O 45 STOPNI
                     else:
-                        # NOWOŚĆ: Natychmiastowy obrót do dowolnego kąta!
-                        if hasattr(ct, 'can_rotate') and ct.can_rotate(best_dir):
-                            ct.rotate(best_dir)
-                        elif not hasattr(ct, 'can_rotate'):
-                            ct.rotate(best_dir) # Fallback, jeśli metoda can_rotate jest schowana
+                        # Tarcza zegara, żeby wyliczyć najkrótszą drogę obrotu
+                        dir_order = [
+                            Direction.NORTH, Direction.NORTHEAST, Direction.EAST, 
+                            Direction.SOUTHEAST, Direction.SOUTH, Direction.SOUTHWEST, 
+                            Direction.WEST, Direction.NORTHWEST
+                        ]
+                        idx_curr = dir_order.index(my_dir)
+                        idx_tgt = dir_order.index(best_dir)
+                        
+                        # Sprawdzamy, w którą stronę jest bliżej (w lewo czy w prawo)
+                        diff = (idx_tgt - idx_curr) % 8
+                        if diff <= 4:
+                            next_dir = dir_order[(idx_curr + 1) % 8]  # W prawo (Zgodnie ze wskazówkami)
+                        else:
+                            next_dir = dir_order[(idx_curr - 1) % 8]  # W lewo (Przeciwnie do wskazówek)
+                            
+                        # Silnik zgłosi wyjątek, jeśli spróbujemy obrócić się o więcej niż 1 krok, 
+                        # dlatego przekazujemy wyliczony next_dir (dokładnie 45 stopni obok obecnego)
+                        ct.rotate(next_dir)
 
         # ==========================================
         # 4. LOGIKA PROBY (BUILDER_BOT)
