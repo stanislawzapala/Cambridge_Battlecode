@@ -3028,16 +3028,7 @@ class Player:
                                 if best_de_pos:
                                     self.bot_state = BotState.SABOTEUR
                                     self.target = best_de_pos
-                                    
-                                    # Wyliczamy obrót Sentinela prosto we wrogą bazę
-                                    s_dir = best_de_pos.direction_to(self.enemy_core_center)
-                                    if s_dir not in ORTHOGONAL_DIRECTIONS:
-                                        dx_s, dy_s = self.enemy_core_center.x - best_de_pos.x, self.enemy_core_center.y - best_de_pos.y
-                                        s_dir = Direction.EAST if abs(dx_s) > abs(dy_s) and dx_s > 0 else \
-                                                Direction.WEST if abs(dx_s) > abs(dy_s) else \
-                                                Direction.SOUTH if dy_s > 0 else Direction.NORTH
-                                                
-                                    self.sabotage_dir = s_dir
+                                    self.sabotage_dir = self._get_8way_dir_to(best_de_pos, self.enemy_core_center)
                                     self.path = []
                                     zmieniono_stan = True
 
@@ -3070,20 +3061,86 @@ class Player:
                                         best_score = score
                                         nowy_cel = pos
                                         
-                        # --- PRIORYTET 3: PATROL (Brak wrogich budynków w pamięci) ---
+                        # --- PRIORYTET 3: ZWIAD STRATEGICZNY (Szukanie bazy w symetriach i rogach) ---
                         if not nowy_cel and not zmieniono_stan:
-                            enemy_core_est = self.enemy_core_center or Position(map_width // 2, map_height // 2)
-                            rad_x, rad_y = map_width // 3, map_height // 3
-                            rx = random.randint(max(0, enemy_core_est.x - rad_x), min(map_width - 1, enemy_core_est.x + rad_x))
-                            ry = random.randint(max(0, enemy_core_est.y - rad_y), min(map_height - 1, enemy_core_est.y + rad_y))
-                            nowy_cel = Position(rx, ry)
+                            punkty_zwiadu = []
+                            
+                            # 1. Główna estymacja (najprawdopodobniej symetria punktowa)
+                            if self.enemy_core_center:
+                                punkty_zwiadu.append(self.enemy_core_center)
+                                
+                            # 2. Alternatywne symetrie (Odbicie lustrzane X oraz Y)
+                            if self.my_core_center:
+                                mx, my = self.my_core_center.x, self.my_core_center.y
+                                punkty_zwiadu.append(Position(mx, map_height - 1 - my)) # Odbicie pionowe
+                                punkty_zwiadu.append(Position(map_width - 1 - mx, my))  # Odbicie poziome
+                            
+                            # 3. Klasyczne rogi mapy (Gdyby map-maker zaszalał i zrezygnował z symetrii)
+                            # Odsuwamy się od ścian (np. o 1/6 mapy), żeby widzieć więcej przestrzeni
+                            marg_x, marg_y = map_width // 6, map_height // 6
+                            punkty_zwiadu.extend([
+                                Position(marg_x, marg_y), 
+                                Position(map_width - 1 - marg_x, map_height - 1 - marg_y),
+                                Position(map_width - 1 - marg_x, marg_y), 
+                                Position(marg_x, map_height - 1 - marg_y)
+                            ])
+                            
+                            # Szukamy pierwszego punktu, którego jeszcze nie sprawdziliśmy
+                            for punkt in punkty_zwiadu:
+                                # Upewniamy się, że punkt w pamięci nie jest litą skałą
+                                if self.memory.get(punkt, Environment.EMPTY) in HARD_OBSTACLES:
+                                    continue
+                                
+                                # Jeśli jesteśmy dalej niż 6 kratek (dystans^2 = 36), idziemy tam!
+                                # Jeśli jesteśmy bliżej, a kod dotarł aż tutaj (czyli nie znalazł bazy w PRIO 1),
+                                # to znaczy, że bazy tu nie ma i w pętli sprawdzamy kolejny punkt.
+                                if my_pos.distance_squared(punkt) > 36:
+                                    nowy_cel = punkt
+                                    break
+                                    
+                            # Zabezpieczenie awaryjne - jeśli bot obiegł wszystkie punkty i nic nie znalazł
+                            if not nowy_cel:
+                                rx = random.randint(0, map_width - 1)
+                                ry = random.randint(0, map_height - 1)
+                                nowy_cel = Position(rx, ry)
 
-                        # Ostateczne przypisanie celu dla HARRAS
-                        if nowy_cel and not zmieniono_stan and self.target != nowy_cel:
-                            self.target = nowy_cel
-                            self.path = []
-
-
+            elif current_state == BotState.SABOTEUR:
+                # ==========================================
+                # SABOTEUR: Podchodzi NA KROK (is_building=True), niszczy markery i stawia mury/gunnery.
+                # Po wykonaniu roboty wraca do stanu HARRAS.
+                # ==========================================
+                if not self.target:
+                    self.bot_state = BotState.HARRAS
+                elif my_pos.distance_squared(self.target) <= 2 and ct.get_action_cooldown() == 0:
+                    tp = self.target
+                    tp_type, tp_team, _, _ = self.buildings.get(tp, (None, None, None, -1))
+                    
+                    # Zabezpieczenie: jeśli cel jest już zajęty przez budynek. 
+                    if tp_type is not None and tp_type not in {EntityType.MARKER, EntityType.ROAD}:
+                        self.bot_state = BotState.HARRAS
+                        self.target = None
+                        self.path = []
+                    else:
+                        # Akcja 1: Wyczyszczenie terenu pod naszą budowę (niszczy tylko marker lub naszą/wrogą drogę)
+                        if tp_type in {EntityType.MARKER, EntityType.ROAD} and ct.can_destroy(tp):
+                            ct.destroy(tp)
+                            
+                        # Akcja 2: Budowa właściwa (jeśli pole jest puste)
+                        else:
+                            if self.sabotage_dir is None: 
+                                # Flaga None = Budowa Muru (odcięcie bazy)
+                                if self._can_afford_build(ct, 'barrier') and ct.can_build_barrier(tp):
+                                    ct.build_barrier(tp)
+                                    self.bot_state = BotState.HARRAS
+                                    self.target = None
+                                    self.path = []
+                            else: 
+                                # Flaga z kierunkiem = Budowa Sentinela (ślepy koniec)
+                                if self._can_afford_build(ct, 'gunner') and ct.can_build_gunner(tp, self.sabotage_dir):
+                                    ct.build_gunner(tp, self.sabotage_dir)
+                                    self.bot_state = BotState.HARRAS
+                                    self.target = None
+                                    self.path = []
 
 
 
