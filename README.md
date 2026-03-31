@@ -10,9 +10,9 @@ Cambridge Battlecode challenge
 
 ## To do list
 Aktualne:
+- harras nie jest w stanie niszczyć naszych dróg aby zbudować barierę, wrogą drogę też
 - explore priorytetyzuje tytan gdy widzi
 - harras są cztery pętle for, zmergować je
-- środek wrogiego core gdy widzimy tylko 1/2/3 tile aby był o 1 dalej niż położenie bota
 - build_bunker jak wylosuje wall na środku to głupieje
 - Implementacja zblockowanych przestrzeni (całkowicie odciętych przez mury)
 - repairman  i explore dociąga ślepe zaułki

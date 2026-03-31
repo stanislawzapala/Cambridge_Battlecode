@@ -567,7 +567,7 @@ class Player:
         ys = [p.y for p in self.enemy_core_tiles]
         
         # Jeśli widzimy pełen rozstaw od brzegu do brzegu (3x3)
-        if len(self.enemy_core_tiles) > 4:
+        if max(xs) - min(xs) == 2 and max(ys) - min(ys) == 2:
             self.enemy_core_cx = min(xs) + 1
             self.enemy_core_cy = min(ys) + 1
             self.enemy_core_center = Position(self.enemy_core_cx, self.enemy_core_cy)
@@ -860,13 +860,16 @@ class Player:
                 best_priority = 999  # 1: Bot, 2: Budynek, 3: Droga
 
                 # Sprawdzamy wszystkie 8 kierunków
+                # Sprawdzamy wszystkie 8 kierunków
                 for d in DIRECTIONS:
                     dx, dy = DIR_DELTAS[d]
                     target_in_this_dir = None
                     target_prio = 999
                     
-                    # Gunner ma zasięg 2 pól, więc badamy tylko "krok 1" i "krok 2"
-                    for step in (1, 2):
+                    # Gunner ma zasięg euclidean_distance_squared <= 13
+                    # (czyli 3 pola w pionie/poziomie, 2 pola po przekątnej)
+                    step = 1
+                    while (dx * step)**2 + (dy * step)**2 <= 13:
                         p = Position(my_pos.x + dx * step, my_pos.y + dy * step)
                         
                         # Sprawdzamy czy nie wyszliśmy poza mapę
@@ -910,14 +913,18 @@ class Player:
                             found_solid_obstacle = True
                             
                         # Jeśli trafiliśmy na cokolwiek solidnego (bot, budynek, ściana), 
-                        # promień lasera się zatrzymuje - NIE sprawdzamy kratki nr 2 w tym kierunku.
+                        # promień lasera się zatrzymuje - NIE sprawdzamy kolejnej kratki w tym kierunku.
                         if found_solid_obstacle:
                             break 
                             
-                    # Po zbadaniu kierunku sprawdzamy, czy znaleźliśmy lepszy cel
+                        # Zwiększamy krok, jeśli nie uderzyliśmy w ścianę/budynek
+                        step += 1
+                            
+                    # Po zbadaniu CAŁEJ dostępnej linii w danym kierunku sprawdzamy, czy znaleźliśmy lepszy cel
                     if target_in_this_dir and target_prio < best_priority:
-                        # Warunek obrotu: możemy zmienić cel tylko, jeśli nas na to stać (10 Ti)
-                        if d == my_dir or my_tit >= 10:
+                        # Możemy zmienić cel tylko, jeśli nas na to stać
+                        rotate_cost = int(10 * scale)
+                        if d == my_dir or my_tit >= rotate_cost:
                             best_priority = target_prio
                             best_target = target_in_this_dir
                             best_dir = d
@@ -966,10 +973,8 @@ class Player:
                 if current_round == 2:
                     self.bot_state = BotState.HARRAS
                     self.target = Position(map_width // 2, map_height // 2)
-                elif current_round == 21:
-                    self.bot_state = BotState.BUILD_BUNKER
                 elif current_round == 101:
-                    self.bot_state = BotState.FORTIFIER
+                    self.bot_state = BotState.BUILD_BUNKER
                 elif current_round >= 150:
                     # Typ bota wyznaczany z tury spawnu modulo 
                     type_index = ((current_round - 150) // 12) % len(LATE_STATES)
@@ -1660,7 +1665,7 @@ class Player:
                                                 repair_dir = out_pos.direction_to(Position(self.my_core_cx, self.my_core_cy))
                                                 # Upewnij się że to kierunek ortogonalny
                                                 for rd in ORTHOGONAL_DIRECTIONS:
-                                                    if rd == repair_dir or rd == out_pos.direction_to(Position(ccx, ccy)):
+                                                    if rd == repair_dir or rd == out_pos.direction_to(Position(self.my_core_cx, self.my_core_cy)):
                                                         if ct.can_build_conveyor(out_pos, rd):
                                                             ct.build_conveyor(out_pos, rd)
                                                             healed_this_turn = True
@@ -2493,7 +2498,7 @@ class Player:
                         return True
 
                     def is_existing_network(pos):
-                        pass
+                        
                         if pos in current_belt_chain:
                             return False
                         mem = self.buildings.get(pos)
@@ -2976,7 +2981,11 @@ class Player:
 
                                     if built:
                                         self.belt_stuck_counter = 0  # postęp — resetuj licznik
-                                        if build_mode == 'conveyor':
+                                        if build_mode == 'sentinel':
+                                            # Bot zbudował Sentinela, zostaje przy Splitterze na drugą stronę
+                                            self.target = last_node
+                                            self.path = []
+                                        elif build_mode == 'conveyor':
                                             conv_output = build_pos.add(build_target)
                                             self.last_bridge_node = conv_output
                                             self.belt_chain.add(build_pos)
@@ -3101,8 +3110,8 @@ class Player:
                 # ==========================================
                 # BUILD_BUNKER: Tworzy ufortyfikowaną placówkę na środku mapy
                 # ==========================================
-                if current_round >= 60:
-                    self.state = BotState.EXPLORE
+                if current_round >= 100:
+                    self.bot_state = BotState.EXPLORE
                     self.target = None
                     self.path = []  
 
@@ -3220,9 +3229,9 @@ class Player:
                         if t_team == enemy_team and (t_type in NETWORK or t_type == EntityType.ROAD):
                             target_invalid = False
 
-                    # USUNIĘTE current_round % 5 == 0! Zmieniamy cel TYLKO, jeśli go nie mamy, został zniszczony, albo na nim stoimy.
-                    # Dzięki temu bot jak pitbull wgryza się w ustalony cel i nie tańczy za uciekającym surowcem!
-                    if not self.target or my_pos == self.target or target_invalid:
+                    # Dzięki temu bot nie tańczy za uciekającym surowcem
+                    early_turn = (current_round <= 100) and (current_round % 5 == 0)
+                    if not self.target or my_pos == self.target or target_invalid or early_turn:
                         nowy_cel = None
                         zmieniono_stan = False
 
