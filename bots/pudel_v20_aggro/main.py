@@ -3140,7 +3140,7 @@ class Player:
                         zmieniono_stan = False
 
                             # --- PRIORYTET 1: SABOTAŻ BAZY I ŚLEPYCH KOŃCÓW ---
-                        if self.enemy_core_seen and self.enemy_core_center:
+                        if self.enemy_core_seen: # było też:  and self.enemy_core_center
                             kabel_przy_bazie = None
                             puste_przy_bazie = None
                             
@@ -3155,7 +3155,7 @@ class Player:
                                     if not (0 <= adj.x < map_width and 0 <= adj.y < map_height): continue
                                     
                                     b_type_adj, b_team_adj, b_dir, _ = self.buildings.get(adj, (None, None, None, -1))
-                                    if b_type_adj and b_team_adj == enemy_team and (b_id_adj in NETWORK or b_type_adj == EntityType.ROAD):
+                                    if b_type_adj and b_team_adj == enemy_team and (b_type_adj in NETWORK or b_type_adj == EntityType.ROAD):
                                         if kabel_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(kabel_przy_bazie):
                                             kabel_przy_bazie = adj
                                                                                 
@@ -3248,6 +3248,7 @@ class Player:
                             # 2. Alternatywne symetrie (Odbicie lustrzane X oraz Y)
                             if self.my_core_center:
                                 mx, my = self.my_core_center.x, self.my_core_center.y
+                                punkty_zwiadu.append(Position(map_width - 1 - mx, map_height - 1 - my))
                                 punkty_zwiadu.append(Position(mx, map_height - 1 - my)) # Odbicie pionowe
                                 punkty_zwiadu.append(Position(map_width - 1 - mx, my))  # Odbicie poziome
                             
