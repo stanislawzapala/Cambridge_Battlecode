@@ -10,6 +10,8 @@ Cambridge Battlecode challenge
 
 ## To do list
 Aktualne:
+- dobry pomysł na dodatkową linię obrony: launcher przed sentinelem (odrzucający wrogie probki wchodzące na nasze splittery)
+- jeśli harras nie trafi we wrogą bazę i tak zaczyna budować bariery
 - harras nie jest w stanie niszczyć naszych dróg aby zbudować barierę, wrogą drogę też
 - explore priorytetyzuje tytan gdy widzi
 - harras są cztery pętle for, zmergować je
