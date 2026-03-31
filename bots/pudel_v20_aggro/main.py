@@ -770,9 +770,6 @@ class Player:
             # Obrót kosztuje 10 Ti i zmienia kierunek o 45 stopni (1 krok).
             if ct.get_action_cooldown() == 0 and ct.get_ammo_amount() > 0:
                 my_dir = ct.get_direction()
-                my_pos = ct.get_position()
-                my_tit, _ = ct.get_global_resources()
-
                 # --- INTELIGENTNY SKANER LINII ZASILAJĄCEJ (KROPLÓWKI) ---
                 # Rekurencyjnie znajdujemy całą wrogą sieć, która nas zasila
                 safe_feeders = set()

@@ -4,20 +4,24 @@ Cambridge Battlecode challenge
 # Projekt PUDEL - Dziennik Zmian (Changelog)
 
 ## Aktualna Wersja
-**v9: Stable (Fuzja)**
-- Połączenie pełnej Maszyny Stanów (v7) z systemami omijania blokad (v8). Boty poprawnie rozdzielają role (Zwiadowca / Budowniczy), pamiętają mapę i inteligentnie omijają przeszkody bez wpadania w nieskończone pętle.
+**v20: Aggro**
 
 ---
 
 ## To do list
-- pozamieniać self.słowniki na self.wartości. np self.bots_id. bo obecnie jest tak, jakby miały współdzieloną pamięć
-- obecnie markery spamią się z dowolną informacją o wrogiej strukturze - czyli też o drodze. a wolelibyśmy priorytetyzować informacje o ważniejszych budynkach lub o złożach.
-- Brak bezpośredniego ataku na Core wroga
-Strategia skupia się wyłącznie na ekonomii i defensywie. Żaden bot nigdy nie idzie w stronę wrogiego Core — nawet gdy jest znany z VIP Facts. Można by dodać typ bota (np. jako 5. w rotacji po turze 400, albo jako upgrade KAMIKAZE gdy brak wrogich Harvesterów) który próbuje dotrzeć do Core wroga i dokonuje autodestrukcji na nim lub jego bezpośrednim otoczeniu. Nawet 20 DMG z jednego bota skumulowane przez kilka takich ataków może być istotne pod koniec gry.
-- KAMIKAZE nie przejmuje złoża po ataku
-Po postawieniu Sentinela KAMIKAZE od razu staje się REPAIRMAN — bez czekania na zniszczenie Harvestera i bez próby przejęcia złoża. Brakuje logiki oblężenia: postaw drogę na złożu jako blokadę → poczekaj → zbuduj nasz Harvester. To zwłaszcza boli, bo Sentinel jest już na miejscu i prawie na pewno zniszczy Harvestera — a złoże zostaje niezagospodarowane.
-- Smelter niszczy infrastrukturę bez sprawdzenia surowców przy podłączaniu
-W fazie connect, gdy src_pos.distance_squared(fpos) <= 9, Smelter po prostu robi ct.destroy(src_pos) i próbuje postawić Most. Jeśli Most się nie uda (brak surowców), element sieci jest trwale zniszczony. Brak analogicznej do fazy build ochrony "destroy tylko gdy stać".
+Aktualne:
+- Implementacja zblockowanych przestrzeni (całkowicie odciętych przez mury)
+- repairman  i explore dociąga ślepe zaułki
+- explore dociąga wrogie harvestery
+- explore stawia gunnery / sentinele i bariery wokól harvestera
+- explore stawia sentinele przy naszej bazie w miejscu, gdzie dociągnął taśmociąg
+- bottlenecki taśmociągu
+- jeśli hp bazy nie jest pełne spawni bota, a on staje się repairmanem i znajduje bezpieczne pole, na nim stoi i leczy bazę
+- przy budowie powrotnej build_belt zawiesza się, gdy 
+
+
+
+Dawne:
 - FORTIFIER nie ma trybu oblężenia przy wrogich Harvesterach
 Gdy Fortifier wyczerpie miejsca na Sentinele przy wrogim Harvesterze, po prostu szuka nowego celu. Tymczasem Sentinele które właśnie postawił prawie na pewno zniszczą Harvestera — i złoże zostaje puste, gotowe do przejęcia przez wroga lub przez nas. Brak mechanizmu czekania i budowy własnego Harvestera na uwolnionym złożu.
 - Smelter nie monitoruje Foundry po zakończeniu budowy
