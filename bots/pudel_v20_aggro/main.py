@@ -88,9 +88,7 @@ WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, Bo
 LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.SMELTER]
 
 # 4. SIEĆ LOGISTYCZNA
-# (NETWORK i NETWORK_TYPES_S to obecnie ten sam zbiór - docelowo zrób refactor i zostaw tylko NETWORK)
 NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
-NETWORK_TYPES_S = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
 # NETWORK_TYPES to to samo co wyżej, ale zawiera Harvestera
 NETWORK_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER, EntityType.HARVESTER}
 
@@ -1852,7 +1850,7 @@ class Player:
                                 continue
                             if ct.get_team(b_id_s) != my_team:
                                 continue
-                            if ct.get_entity_type(b_id_s) not in NETWORK_TYPES_S:
+                            if ct.get_entity_type(b_id_s) not in NETWORK:
                                 continue
                             try:
                                 res = ct.get_stored_resource(b_id_s)
@@ -3073,9 +3071,17 @@ class Player:
                 # 1. Atak na cel, jeśli na nim stoimy
                 if self.target and my_pos == self.target:
                     b_type, b_team, _, _ = self.buildings.get(my_pos, (None, None, None, -1))
-                    if b_type and b_team == enemy_team and b_type in NETWORK:
+                    
+                    if b_type and b_team == enemy_team and (b_type in NETWORK or b_type == EntityType.ROAD):
                         if ct.get_action_cooldown() == 0 and ct.can_fire(my_pos):
                             ct.fire(my_pos)
+
+                            # ---> KLUCZOWA ZMIANA: Po zniszczeniu przełączamy się od razu na budowę! <---
+                            if ct.get_tile_building_id(my_pos) == None:
+                                self.bot_state = BotState.SABOTEUR
+                                # self.target zostaje bez zmian (to pole, na którym właśnie stoimy i które oczyściliśmy)
+                                return
+                        
                         is_action_taken = True
 
                 if not is_action_taken and ct.get_action_cooldown() == 0:
@@ -3247,29 +3253,55 @@ class Player:
                     tp = self.target
                     tp_type, tp_team, _, _ = self.buildings.get(tp, (None, None, None, -1))
                     
+                    # ---> POPRAWKA: Zabezpieczenie. Uciekamy, jeśli na polu jest coś, czego nie umiemy zdemontować (np. wroga droga)
+                    is_removable = (tp_type == EntityType.MARKER) or (tp_type == EntityType.ROAD and tp_team == my_team)
+
                     # Zabezpieczenie: jeśli cel jest już zajęty przez budynek. 
-                    if tp_type is not None and tp_type not in {EntityType.MARKER, EntityType.ROAD}:
+                    if tp_type is not None and not is_removable:
                         self.bot_state = BotState.HARRAS
                         self.target = None
                         self.path = []
                     else:
-                        # Akcja 1: Wyczyszczenie terenu pod naszą budowę (niszczy tylko marker lub naszą/wrogą drogę)
-                        if tp_type in {EntityType.MARKER, EntityType.ROAD} and ct.can_destroy(tp):
+                        # Akcja 1: Wyczyszczenie terenu pod naszą budowę (niszczy tylko marker lub naszą drogę)
+                        if tp_type == EntityType.ROAD and ct.can_destroy(tp):
                             ct.destroy(tp)
                             
                         # Akcja 2: Budowa właściwa (jeśli pole jest puste)
                         else:
-                            if self.sabotage_dir is None: 
-                                # Flaga None = Budowa Muru (odcięcie bazy)
-                                if self._can_afford_build(ct, 'barrier') and ct.can_build_barrier(tp):
-                                    ct.build_barrier(tp)
+                            # Szukamy, czy na to pole wskazuje jakiś wrogi taśmociąg lub most
+                            pointing_enemy_dir = None
+                            for d in ORTHOGONAL_DIRECTIONS:
+                                adj_feed = tp.add(d)
+                                if not (0 <= adj_feed.x < map_width and 0 <= adj_feed.y < map_height):
+                                    continue
+                                if ct.is_in_vision(adj_feed):
+                                    adj_b_id = ct.get_tile_building_id(adj_feed)
+                                    if adj_b_id is not None and ct.get_team(adj_b_id) == enemy_team:
+                                        adj_type = ct.get_entity_type(adj_b_id)
+                                        if adj_type == EntityType.CONVEYOR:
+                                            try:
+                                                if adj_feed.add(ct.get_direction(adj_b_id)) == tp:
+                                                    pointing_enemy_dir = d.opposite()
+                                                    break
+                                            except Exception: pass
+                                        elif adj_type == EntityType.BRIDGE:
+                                            try:
+                                                if ct.get_bridge_target(adj_b_id) == tp:
+                                                    pointing_enemy_dir = d.opposite()
+                                                    break
+                                            except Exception: pass
+                            
+                            if pointing_enemy_dir is not None:
+                                # Ślepy koniec znaleziony -> Stawiamy Gunnera
+                                if self._can_afford_build(ct, 'gunner') and ct.can_build_gunner(tp, pointing_enemy_dir):
+                                    ct.build_gunner(tp, pointing_enemy_dir)
                                     self.bot_state = BotState.HARRAS
                                     self.target = None
                                     self.path = []
                             else: 
-                                # Flaga z kierunkiem = Budowa Sentinela (ślepy koniec)
-                                if self._can_afford_build(ct, 'gunner') and ct.can_build_gunner(tp, self.sabotage_dir):
-                                    ct.build_gunner(tp, self.sabotage_dir)
+                                # Puste pole -> Budujemy Mur (Barierę)
+                                if self._can_afford_build(ct, 'barrier') and ct.can_build_barrier(tp):
+                                    ct.build_barrier(tp)
                                     self.bot_state = BotState.HARRAS
                                     self.target = None
                                     self.path = []
