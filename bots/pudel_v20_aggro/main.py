@@ -664,22 +664,33 @@ class Player:
                 self.number_of_bots_to_spawn += 1
 
             if ct.get_action_cooldown() == 0:
-                if current_round in TURNS_TO_SPAWN:
-                    spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
-                    if ct.can_spawn(spawn_pos):
-                        ct.spawn_builder(spawn_pos)
+                # 1. Określamy środek mapy i pozycję naszej bazy
+                map_center = Position(map_width // 2, map_height // 2)
+                core_pos = ct.get_position()
+                
+                # 2. Sortujemy kierunki (od tego, który daje pozycję najbliższą środka mapy)
+                best_directions = sorted(DIRECTIONS, key=lambda d: core_pos.add(d).distance_squared(map_center))
+
+                # 3. Szukamy pierwszego legalnego (wolnego) pola do spawnu
+                best_spawn_pos = None
+                for d in best_directions:
+                    cand_pos = core_pos.add(d)
+                    if ct.can_spawn(cand_pos):
+                        best_spawn_pos = cand_pos
+                        break
+                
+                # 4. Jeśli znaleźliśmy miejsce, wykonujemy logikę spawnu
+                if best_spawn_pos is not None:
+                    if current_round in TURNS_TO_SPAWN:
+                        ct.spawn_builder(best_spawn_pos)
                         self.spawned_bots_count += 1
-                elif current_round >= 150 and (current_round - 150) % 12 == 0 and self.spawned_bots_count < 20:
-                    # Bot specjalny — typ wyznaczany przez numer iteracji modulo 5
-                    spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
-                    if ct.can_spawn(spawn_pos):
-                        ct.spawn_builder(spawn_pos)
+                    elif current_round >= 150 and (current_round - 150) % 12 == 0 and self.spawned_bots_count < 20:
+                        # Bot specjalny — typ wyznaczany przez numer iteracji modulo 5
+                        ct.spawn_builder(best_spawn_pos)
                         self.bot_late_spawn_index += 1
                         self.spawned_bots_count += 1
-                elif self.spawned_bots_count < self.number_of_bots_to_spawn:
-                    spawn_pos = ct.get_position().add(random.choice(DIRECTIONS))
-                    if ct.can_spawn(spawn_pos):
-                        ct.spawn_builder(spawn_pos)
+                    elif self.spawned_bots_count < self.number_of_bots_to_spawn:
+                        ct.spawn_builder(best_spawn_pos)
                         self.spawned_bots_count += 1
             return
 
@@ -3096,10 +3107,13 @@ class Player:
                                         if kabel_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(kabel_przy_bazie):
                                             kabel_przy_bazie = adj
                                                                                 
-                                    if not puste_przy_bazie and self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
+                                    if  self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
                                         b_info = self.buildings.get(adj)
-                                        if not b_info or b_info[0] in {None, EntityType.MARKER, EntityType.ROAD}:
-                                            if my_pos.distance_squared(adj) < my_pos.distance_squared(puste_przy_bazie):
+                                        # ---> POPRAWKA: Akceptujemy tylko puste, markery lub NASZĄ drogę
+                                        is_removable = not b_info or b_info[0] in {None, EntityType.MARKER} or (b_info[0] == EntityType.ROAD and b_info[1] == my_team)
+                                        
+                                        if is_removable:
+                                            if puste_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(puste_przy_bazie):
                                                 puste_przy_bazie = adj
                                             
                             if kabel_przy_bazie:
@@ -3228,7 +3242,7 @@ class Player:
                     self.bot_state = BotState.HARRAS
                 elif my_pos == self.target:
                     pass
-                
+
                 elif my_pos.distance_squared(self.target) <= 2 and ct.get_action_cooldown() == 0:
                     tp = self.target
                     tp_type, tp_team, _, _ = self.buildings.get(tp, (None, None, None, -1))
