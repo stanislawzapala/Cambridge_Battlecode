@@ -10,6 +10,8 @@ Cambridge Battlecode challenge
 
 ## To do list
 Aktualne:
+- explore priorytetyzuje tytan gdy widzi
+- build_bunker jak wylosuje wall na środku to głupieje
 - Implementacja zblockowanych przestrzeni (całkowicie odciętych przez mury)
 - repairman  i explore dociąga ślepe zaułki
 - explore dociąga wrogie harvestery

@@ -120,7 +120,7 @@ COST_MAPPING = {
 }
 
 # PRODUKCJA PROBEK
-TURNS_TO_SPAWN = {1, 2, 3, 20, 50, 100, 150}
+TURNS_TO_SPAWN = {1, 2, 20, 50, 100, 150}
 
 
 
@@ -926,12 +926,12 @@ class Player:
                 self.repairman_prev_hp = ct.get_hp()
 
                 # Początkowy stan — zależy od tury spawnu
-                if current_round <= 2:
+                if current_round == 2:
                     self.bot_state = BotState.HARRAS
                     self.target = Position(map_width // 2, map_height // 2)
-                elif current_round in (20, 21):
+                elif current_round == 21:
                     self.bot_state = BotState.BUILD_BUNKER
-                elif current_round in (100, 101):
+                elif current_round == 101:
                     self.bot_state = BotState.FORTIFIER
                 elif current_round >= 150:
                     # Typ bota wyznaczany z tury spawnu modulo 
@@ -3297,6 +3297,21 @@ class Player:
 
                 elif my_pos.distance_squared(self.target) <= 2 and ct.get_action_cooldown() == 0:
                     tp = self.target
+
+                    # ---> NOWE ZABEZPIECZENIE: ZDERZENIE Z RZECZYWISTOŚCIĄ (ŚCIANA/RUDA) <---
+                    # Jesteśmy blisko, więc na pewno widzimy cel. Przebijamy "mgłę wojny"!
+                    if ct.is_in_vision(tp):
+                        rzeczywisty_teren = ct.get_tile_env(tp)
+                        if rzeczywisty_teren in HARD_OBSTACLES:
+                            # Okazało się, że to ściana!
+                            # 1. Zapisujemy w pamięci, żeby Harras już nigdy tego nie wybrał
+                            self.memory[tp] = rzeczywisty_teren
+                            # 2. Porzucamy ten głupi pomysł i wracamy szukać nowego celu
+                            self.bot_state = BotState.HARRAS
+                            self.target = None
+                            self.path = []
+                            return  # Kończymy turę
+                        
                     tp_type, tp_team, _, _ = self.buildings.get(tp, (None, None, None, -1))
                     
                     # ---> POPRAWKA: Zabezpieczenie. Uciekamy, jeśli na polu jest coś, czego nie umiemy zdemontować (np. wroga droga)
