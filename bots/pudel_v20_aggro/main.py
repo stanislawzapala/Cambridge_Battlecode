@@ -773,6 +773,54 @@ class Player:
                 my_pos = ct.get_position()
                 my_tit, _ = ct.get_global_resources()
 
+                # --- INTELIGENTNY SKANER LINII ZASILAJĄCEJ (KROPLÓWKI) ---
+                # Rekurencyjnie znajdujemy całą wrogą sieć, która nas zasila
+                safe_feeders = set()
+                to_check = [my_pos]
+                visited = {my_pos}
+                
+                while to_check:
+                    curr = to_check.pop(0)
+                    for d_feed in ORTHOGONAL_DIRECTIONS:
+                        nb = curr.add(d_feed)
+                        # Zabezpieczenie przed wyjściem poza mapę i zapętleniem
+                        if nb in visited or not (0 <= nb.x < map_width and 0 <= nb.y < map_height):
+                            continue
+                        if not ct.is_in_vision(nb):
+                            continue
+                            
+                        b_id_nb = ct.get_tile_building_id(nb)
+                        if b_id_nb is None or ct.get_team(b_id_nb) != enemy_team:
+                            continue
+                            
+                        b_type_nb = ct.get_entity_type(b_id_nb)
+                        is_feeder = False
+                        
+                        if b_type_nb == EntityType.HARVESTER:
+                            is_feeder = True
+                        elif b_type_nb == EntityType.CONVEYOR:
+                            try:
+                                if nb.add(ct.get_direction(b_id_nb)) == curr:
+                                    is_feeder = True
+                            except Exception: pass
+                        elif b_type_nb == EntityType.BRIDGE:
+                            try:
+                                if ct.get_bridge_target(b_id_nb) == curr:
+                                    is_feeder = True
+                            except Exception: pass
+                        elif b_type_nb == EntityType.SPLITTER:
+                            try:
+                                # Splitter zasila nas, jeśli nie stoimy od strony jego wejścia
+                                input_pos = nb.add(ct.get_direction(b_id_nb).opposite())
+                                if curr != input_pos:
+                                    is_feeder = True
+                            except Exception: pass
+                            
+                        if is_feeder:
+                            safe_feeders.add(nb)
+                            to_check.append(nb)
+                            visited.add(nb)
+
                 best_target = None
                 best_dir = None
                 best_priority = 999  # 1: Bot, 2: Budynek, 3: Droga
@@ -812,9 +860,10 @@ class Player:
                             if bt != EntityType.MARKER:
                                 found_solid_obstacle = True
                                 if ct.get_team(b_id) == enemy_team:
-                                    # Pomijamy harvestera, jeśli stoi tuż obok (dystans 1), żeby w niego nie strzelać
-                                    if bt == EntityType.HARVESTER and step == 1:
-                                        pass 
+                                    
+                                    # Sprawdzamy, czy wrogi budynek jest na liście naszej kroplówki
+                                    if p in safe_feeders:
+                                        pass  # Nietykalny - ignorujemy cel!
                                     elif bt == EntityType.ROAD:
                                         target_in_this_dir = p
                                         target_prio = 3 # Najniższy priorytet
@@ -3077,7 +3126,7 @@ class Player:
                             ct.fire(my_pos)
 
                             # ---> KLUCZOWA ZMIANA: Po zniszczeniu przełączamy się od razu na budowę! <---
-                            if ct.get_tile_building_id(my_pos) == None:
+                            if ct.get_tile_building_id(my_pos) is None:
                                 self.bot_state = BotState.SABOTEUR
                                 # self.target zostaje bez zmian (to pole, na którym właśnie stoimy i które oczyściliśmy)
                                 return
@@ -3108,14 +3157,13 @@ class Player:
                                     adj = Position(self.enemy_core_center.x + dx, self.enemy_core_center.y + dy)
                                     if not (0 <= adj.x < map_width and 0 <= adj.y < map_height): continue
                                     
-                                    b_id_adj, b_team, b_dir, _ = self.buildings.get(adj, (None, None, None, -1))
-                                    if b_id_adj and b_team == enemy_team and b_id_adj in NETWORK:
+                                    b_type_adj, b_team_adj, b_dir, _ = self.buildings.get(adj, (None, None, None, -1))
+                                    if b_type_adj and b_team_adj == enemy_team and (b_id_adj in NETWORK or b_type_adj == EntityType.ROAD):
                                         if kabel_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(kabel_przy_bazie):
                                             kabel_przy_bazie = adj
                                                                                 
                                     if  self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
                                         b_info = self.buildings.get(adj)
-                                        # ---> POPRAWKA: Akceptujemy tylko puste, markery lub NASZĄ drogę
                                         is_removable = not b_info or b_info[0] in {None, EntityType.MARKER} or (b_info[0] == EntityType.ROAD and b_info[1] == my_team)
                                         
                                         if is_removable:
