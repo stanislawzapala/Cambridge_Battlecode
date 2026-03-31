@@ -2545,36 +2545,53 @@ class Player:
                     if last_node in delivery_tiles and ct.is_in_vision(last_node):
                         b_id_ln_sp = ct.get_tile_building_id(last_node)
                         if b_id_ln_sp is not None and ct.get_team(b_id_ln_sp) == my_team and ct.get_entity_type(b_id_ln_sp) == EntityType.SPLITTER:
-                            try:
-                                sp_dir = ct.get_direction(b_id_ln_sp)
-                            except Exception:
-                                sp_dir = Direction.NORTH
-                                
+                            
                             sentinels_needed = []
-                            # Sentinel będzie stał na wejściu obróconym w lewo i prawo względem Splittera
-                            for rot in [sp_dir.rotate_left(), sp_dir.rotate_right()]:
-                                sn_pos = last_node.add(rot)
-                                if not (0 <= sn_pos.x < map_width and 0 <= sn_pos.y < map_height): continue
-                                sn_env = self.memory.get(sn_pos, ct.get_tile_env(sn_pos) if ct.is_in_vision(sn_pos) else Environment.EMPTY)
-                                if sn_env in HARD_OBSTACLES: continue
-                                
-                                need_build = True
-                                if ct.is_in_vision(sn_pos):
-                                    sn_b_id = ct.get_tile_building_id(sn_pos)
-                                    if sn_b_id is not None:
-                                        sn_type = ct.get_entity_type(sn_b_id)
-                                        sn_team = ct.get_team(sn_b_id)
-                                        if sn_team == my_team and sn_type == EntityType.SENTINEL:
-                                            need_build = False # Już tu stoi!
-                                        elif sn_team == my_team and sn_type not in {EntityType.MARKER, EntityType.ROAD}:
-                                            need_build = False # Jakiś inny ważny budynek, zostawiamy
-                                if need_build:
-                                    sentinels_needed.append((sn_pos, rot))
+                            if self.my_core_center:
+                                core_cx, core_cy = self.my_core_center.x, self.my_core_center.y
+                                # Twarde pozycje dokładnie takie same jak w logice tury 150+
+                                global_sentinel_offsets = [
+                                    ( 0, -2, Direction.NORTH),   # N
+                                    ( 2, -2, Direction.NORTHEAST),# NE
+                                    ( 2,  0, Direction.EAST),     # E
+                                    ( 2,  2, Direction.SOUTHEAST),# SE
+                                    ( 0,  2, Direction.SOUTH),    # S
+                                    (-2,  2, Direction.SOUTHWEST),# SW
+                                    (-2,  0, Direction.WEST),     # W
+                                    (-2, -2, Direction.NORTHWEST),# NW
+                                ]
+                                for ddx, ddy, facing in global_sentinel_offsets:
+                                    sn_pos = Position(core_cx + ddx, core_cy + ddy)
                                     
+                                    # Interesują nas tylko te 2 sentinele, które bezpośrednio stykają się z naszym Splitterem
+                                    if last_node.distance_squared(sn_pos) <= 2:
+                                        if not (0 <= sn_pos.x < map_width and 0 <= sn_pos.y < map_height): continue
+                                        sn_env = self.memory.get(sn_pos, ct.get_tile_env(sn_pos) if ct.is_in_vision(sn_pos) else Environment.EMPTY)
+                                        if sn_env in HARD_OBSTACLES: continue
+                                        
+                                        need_build = True
+                                        if ct.is_in_vision(sn_pos):
+                                            sn_b_id = ct.get_tile_building_id(sn_pos)
+                                            if sn_b_id is not None:
+                                                sn_type = ct.get_entity_type(sn_b_id)
+                                                sn_team = ct.get_team(sn_b_id)
+                                                if sn_team == my_team and sn_type == EntityType.SENTINEL:
+                                                    need_build = False # Już tu stoi!
+                                                elif sn_team == my_team and sn_type not in {EntityType.MARKER, EntityType.ROAD}:
+                                                    need_build = False # Jakiś inny ważny budynek, nie ruszamy
+                                        if need_build:
+                                            sentinels_needed.append((sn_pos, facing))
+                                            
                             if sentinels_needed:
                                 sentinel_task = sentinels_needed[0] # Bierzemy pierwszego z brzegu
 
-                    # Jeśli musimy zbroić Splitter, NADPISUJEMY standardową logikę pasa transmisyjnego
+                    # Jeśli mamy bojowe zadanie zbrojenia, wyłączamy całkowicie poszukiwanie tras do budowy taśmociągów!
+                    if sentinel_task is not None:
+                        build_pos = sentinel_task[0]
+                        build_target = sentinel_task[1]
+                        build_mode = 'sentinel'
+                        build_is_network = False
+                        source_candidates = []  # Wymusza ominięcie standardowej logiki ciągnięcia pasa
 
                     for source in source_candidates:
                         if not (0 <= source.x < map_width and 0 <= source.y < map_height):
@@ -2830,43 +2847,43 @@ class Player:
                                             build_mode = 'bridge'
                                             build_is_network = False
 
-                    # =========================================================
-                    # KROK 4: Sprawdź czy misja zakończona
-                    # last_node ∈ delivery_tiles → zasoby dotarły do sieci
+                    
                     # =========================================================
                     # KROK 4: Sprawdź czy misja zakończona.
-                    # Sprawdzamy zawsze — niezależnie od pending_splitter.
-                    # Splitter liczy jako cel TYLKO gdy fizycznie stoi.
                     # =========================================================
                     mission_done = False
                     if last_node in delivery_tiles:
-                        # Pozycja splittera — sprawdzamy czy faktycznie stoi
                         if ct.is_in_vision(last_node):
                             b_id_ln_sp = ct.get_tile_building_id(last_node)
                             if b_id_ln_sp is not None and ct.get_team(b_id_ln_sp) == my_team and ct.get_entity_type(b_id_ln_sp) == EntityType.SPLITTER:
                                 # KRYTYCZNA ZMIANA: Kończymy misję dopiero wtedy, gdy nie ma Sentineli do zbudowania!
                                 if sentinel_task is None:
                                     mission_done = True
-                            elif self.pending_splitter is None:
-                                # Splitter nie stoi — musimy go zbudować; ustawiamy pending_splitter
-                                for ddx, ddy, sp_faces in [
-                                    ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
-                                    ( 2, 1, Direction.WEST),  ( 1, 2, Direction.NORTH),
-                                    (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
-                                    (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
-                                ]:
-                                    if last_node == Position(core_cx + ddx, core_cy + ddy):
-                                        self.pending_splitter = (last_node, sp_faces)
-                                        break
-                        # Jeśli nie w zasięgu wzroku — czekamy aż będzie widać
+                        elif self.pending_splitter is None:
+                            # Splitter nie stoi — musimy go zbudować; ustawiamy pending_splitter
+                            for ddx, ddy, sp_faces in [
+                                ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
+                                ( 2, 1, Direction.WEST),  ( 1, 2, Direction.NORTH),
+                                (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
+                                (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
+                            ]:
+                                if last_node == Position(core_cx + ddx, core_cy + ddy):
+                                    self.pending_splitter = (last_node, sp_faces)
+                                    break
+                                    
+                    # Jeśli nie w zasięgu wzroku — czekamy aż będzie widać
                     if not mission_done and ct.is_in_vision(last_node):
                         b_id_ln = ct.get_tile_building_id(last_node)
                         if b_id_ln is not None and ct.get_team(b_id_ln) == my_team:
                             if ct.get_entity_type(b_id_ln) in {EntityType.SPLITTER, EntityType.CORE}:
-                                mission_done = True
+                                if sentinel_task is None:  # ZABEZPIECZENIE
+                                    mission_done = True
+                                    
                     if not mission_done:
                         if is_existing_network(last_node):
-                            mission_done = True
+                            if sentinel_task is None:  # ZABEZPIECZENIE
+                                mission_done = True
+                                
                     if mission_done:
                         self.bot_state = BotState.EXPLORE
                         self.target = None
@@ -2947,9 +2964,11 @@ class Player:
 
                             if my_pos == build_pos:
                                 # Stoimy NA build_pos — zejdź.
-                                if build_mode == 'conveyor':
+                                if build_mode in ['conveyor', 'sentinel']:
+                                    # Dla taśmociągów i wieżyczek build_target to Direction
                                     away_pos = build_pos.add(build_target)
                                 else:
+                                    # Dla mostów build_target to Position
                                     away_pos = build_target
                                 for try_dir in sorted(DIRECTIONS, key=lambda d: my_pos.add(d).distance_squared(away_pos)):
                                     if ct.can_move(try_dir):
@@ -3003,6 +3022,10 @@ class Player:
                                                         if conv_output == Position(core_cx + ddx, core_cy + ddy):
                                                             self.pending_splitter = (conv_output, sp_faces)
                                                             break
+                                            # USUNIĘTO TWARDY EXIT DO EXPLORE! Zlecamy ocenę KROKOWI 4.
+                                            self.target = self.last_bridge_node
+                                            self.path = []
+
                                         else:  # bridge
                                             # last_node = build_target (cel mostu)
                                             self.last_bridge_node = build_target
@@ -3029,7 +3052,10 @@ class Player:
                                                         if build_target == Position(sp_cx + ddx, sp_cy + ddy):
                                                             self.pending_splitter = (build_target, faces)
                                                             break
-
+                                            # USUNIĘTO TWARDY EXIT DO EXPLORE! Zlecamy ocenę KROKOWI 4.
+                                            self.target = self.last_bridge_node
+                                            self.path = []
+                                            
                                         if build_is_network:
                                             # Wpięliśmy się w sieć — misja zakończona
                                             self.bot_state = BotState.EXPLORE
