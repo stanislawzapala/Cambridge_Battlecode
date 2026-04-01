@@ -141,6 +141,7 @@ class Player:
         self.enemy_core_cx: int = 0
         self.enemy_core_cy: int = 0
         self.enemy_core_seen: bool = False
+        self.invalid_enemy_core_guesses: set[Position] = set()
         
         # CORE
         self.number_of_bots_to_spawn: int = 0
@@ -1211,11 +1212,32 @@ class Player:
                 if len(self.enemy_core_tiles) >= 5:
                     self.enemy_core_seen = True
 
+            # ---> NOWOŚĆ: Weryfikacja estymacji - jeśli patrzymy na środek i nie ma tam rdzenia, to pudło! <---
+            if self.enemy_core_center and not self.enemy_core_seen:
+                if ct.is_in_vision(self.enemy_core_center):
+                    b_id = ct.get_tile_building_id(self.enemy_core_center)
+                    # Jeśli nie ma budynku, albo budynek to NIE jest wrogi CORE, estymacja jest błędna
+                    if b_id is None or ct.get_entity_type(b_id) != EntityType.CORE or ct.get_team(b_id) != enemy_team:
+                        self.invalid_enemy_core_guesses.add(self.enemy_core_center)
+                        self.enemy_core_center = None # Kasujemy cel, wymusi to przeliczenie Opcji B
+
             # 2. Opcja B: Nie widzieliśmy bazy wroga, ale znamy własną -> ESTYMUJEMY (Symetria)
-            elif not self.enemy_core_center and self.my_core_center:
-                self.enemy_core_cx = map_width - 1 - self.my_core_cx
-                self.enemy_core_cy = map_height - 1 - self.my_core_cy
-                self.enemy_core_center = Position(self.enemy_core_cx, self.enemy_core_cy)
+            if not self.enemy_core_center and self.my_core_center and not self.enemy_core_seen:
+                mx, my = self.my_core_center.x, self.my_core_center.y
+                
+                # Lista 3 potencjalnych symetrii: Punktowa, Pionowa, Pozioma
+                potencjalne_cele = [
+                    Position(map_width - 1 - mx, map_height - 1 - my), # Odbicie punktowe (najczęstsze)
+                    Position(mx, map_height - 1 - my),                 # Odbicie pionowe
+                    Position(map_width - 1 - mx, my)                   # Odbicie poziome
+                ]
+                
+                for cel in potencjalne_cele:
+                    if cel not in self.invalid_enemy_core_guesses:
+                        self.enemy_core_center = cel
+                        self.enemy_core_cx = cel.x
+                        self.enemy_core_cy = cel.y
+                        break
 
             # ==========================================
             # 2. OBSŁUGA SPLITTERÓW (niezależna od stanu, od tury 100)
@@ -3284,7 +3306,7 @@ class Player:
                         nowy_cel = None
                         zmieniono_stan = False
 
-                        if self.enemy_core_center:
+                        if self.enemy_core_seen and self.enemy_core_center:
                             # --- PRIORYTET 0: MOSTY I SIECI WROGA ZASILAJĄCE BAZĘ ---
                             best_kabel_score = float('inf')
                             najgrozniejszy_kabel = None
@@ -3443,19 +3465,11 @@ class Player:
                         if not nowy_cel and not zmieniono_stan:
                             punkty_zwiadu = []
                             
-                            # 1. Główna estymacja (najprawdopodobniej symetria punktowa)
-                            if self.enemy_core_center:
+                            # 1. Główna estymacja z silnika (która teraz płynnie przeskakuje błędne symetrie)
+                            if self.enemy_core_center and not self.enemy_core_seen:
                                 punkty_zwiadu.append(self.enemy_core_center)
                                 
-                            # 2. Alternatywne symetrie (Odbicie lustrzane X oraz Y)
-                            if self.my_core_center:
-                                mx, my = self.my_core_center.x, self.my_core_center.y
-                                punkty_zwiadu.append(Position(map_width - 1 - mx, map_height - 1 - my))
-                                punkty_zwiadu.append(Position(mx, map_height - 1 - my)) # Odbicie pionowe
-                                punkty_zwiadu.append(Position(map_width - 1 - mx, my))  # Odbicie poziome
-                            
-                            # 3. Klasyczne rogi mapy (Gdyby map-maker zaszalał i zrezygnował z symetrii)
-                            # Odsuwamy się od ścian (np. o 1/6 mapy), żeby widzieć więcej przestrzeni
+                            # 2. Klasyczne rogi mapy (Gdyby map-maker zaszalał i zrezygnował z symetrii)
                             marg_x, marg_y = map_width // 6, map_height // 6
                             punkty_zwiadu.extend([
                                 Position(marg_x, marg_y), 
@@ -3463,29 +3477,6 @@ class Player:
                                 Position(map_width - 1 - marg_x, marg_y), 
                                 Position(marg_x, map_height - 1 - marg_y)
                             ])
-                            
-                            # Szukamy pierwszego punktu, którego jeszcze nie sprawdziliśmy
-                            for punkt in punkty_zwiadu:
-                                # Upewniamy się, że punkt w pamięci nie jest litą skałą
-                                if self.memory.get(punkt, Environment.EMPTY) in HARD_OBSTACLES:
-                                    continue
-                                
-                                # Jeśli jesteśmy dalej niż 6 kratek (dystans^2 = 36), idziemy tam!
-                                # Jeśli jesteśmy bliżej, a kod dotarł aż tutaj (czyli nie znalazł bazy w PRIO 1),
-                                # to znaczy, że bazy tu nie ma i w pętli sprawdzamy kolejny punkt.
-                                if my_pos.distance_squared(punkt) > 36:
-                                    nowy_cel = punkt
-                                    break
-                                    
-                            # Zabezpieczenie awaryjne - jeśli bot obiegł wszystkie punkty i nic nie znalazł
-                            if not nowy_cel:
-                                rx = random.randint(0, map_width - 1)
-                                ry = random.randint(0, map_height - 1)
-                                nowy_cel = Position(rx, ry)
-                        
-                        if nowy_cel and not zmieniono_stan:
-                            self.target = nowy_cel
-                            self.path = []
 
             elif current_state == BotState.SABOTEUR:
                 # ==========================================
