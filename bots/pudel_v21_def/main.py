@@ -739,24 +739,27 @@ class Player:
         elif etype == EntityType.SENTINEL:
             # Sentinel strzela gdy ma amunicję, cooldown = 0.
             # Priorytet celów: 1. boty wroga, 2. budynki wroga (nie drogi), 3. drogi wroga.
-            # NIE strzelamy gdy cel stoi na naszym conveyorze/moście/splitterze.
             if ct.get_action_cooldown() == 0 and ct.get_ammo_amount() > 0:
                 my_dir = ct.get_direction()
 
-                def _sentinel_can_fire(target_pos):
-                    b_id_on_target = ct.get_tile_building_id(target_pos)
-                    b_team = ct.get_team(b_id_on_target)
-                    if (b_id_on_target is not None
-                            and b_team == my_team
-                            and ct.get_entity_type(b_id_on_target) in NETWORK):
-                        return False
-                    
-                    # Nie strzelamy w harvestera, z którego się zasilamy
-                    if ct.get_entity_type(b_id_on_target) == EntityType.HARVESTER and b_team == enemy_team:
-                        if my_pos.distance_squared(target_pos) == 1:
-                            direction_to_harvester = my_pos.direction_to(target_pos)
-                            if my_dir != direction_to_harvester:
-                                return False
+                def _sentinel_can_fire(target_pos, target_is_bot=False):
+                    # KRYTYCZNA ZMIANA: Jeśli celem jest wrogi bot, ignorujemy budynki pod spodem!
+                    if not target_is_bot:
+                        b_id_on_target = ct.get_tile_building_id(target_pos)
+                        b_team = ct.get_team(b_id_on_target)
+                        
+                        if (b_id_on_target is not None
+                                and b_team == my_team
+                                and ct.get_entity_type(b_id_on_target) in NETWORK):
+                            return False
+                        
+                        # Nie strzelamy w harvestera, z którego się zasilamy
+                        if ct.get_entity_type(b_id_on_target) == EntityType.HARVESTER and b_team == enemy_team:
+                            if my_pos.distance_squared(target_pos) == 1:
+                                direction_to_harvester = my_pos.direction_to(target_pos)
+                                if my_dir != direction_to_harvester:
+                                    return False
+                                    
                     return ct.can_fire(target_pos)
 
                 fired = False
@@ -767,13 +770,14 @@ class Player:
                     if ct.get_team(nearby_id) != enemy_team:
                         continue
                     target_pos = ct.get_position(nearby_id)
-                    if _sentinel_can_fire(target_pos):
+                    # Flaga target_is_bot=True zdejmuje bezpieczniki ochrony infrastruktury!
+                    if _sentinel_can_fire(target_pos, target_is_bot=True):
                         ct.fire(target_pos)
                         fired = True
                         break
-                # Prio 2: budynki wroga (nie drogi, nie markery), ale nie strzelamy w harvestera obok wieżyczki
+                        
+                # Prio 2: budynki wroga (nie drogi, nie markery)
                 if not fired:
-                    
                     for nearby_id in ct.get_nearby_entities():
                         if ct.get_entity_type(nearby_id) == EntityType.MARKER:
                             continue
@@ -782,10 +786,11 @@ class Player:
                         if ct.get_entity_type(nearby_id) not in BUILDINGS_PRIO2:
                             continue
                         target_pos = ct.get_position(nearby_id)
-                        if _sentinel_can_fire(target_pos):
+                        if _sentinel_can_fire(target_pos, target_is_bot=False):
                             ct.fire(target_pos)
                             fired = True
                             break
+                            
                 # Prio 3: drogi wroga
                 if not fired:
                     for nearby_id in ct.get_nearby_entities():
@@ -794,7 +799,7 @@ class Player:
                         if ct.get_team(nearby_id) != enemy_team:
                             continue
                         target_pos = ct.get_position(nearby_id)
-                        if _sentinel_can_fire(target_pos):
+                        if _sentinel_can_fire(target_pos, target_is_bot=False):
                             ct.fire(target_pos)
                             break
 
