@@ -2057,7 +2057,7 @@ class Player:
                                     # Nie stawiamy Foundry na pozycji Splittera
                                     if fp in self.allied_splitter_tiles:
                                         continue
-                                    d_core = fp.distance_squared(Position(ccx, ccy))
+                                    d_core = fp.distance_squared(Position(self.my_core_cx, self.my_core_cy))
                                     d_ti = fp.distance_squared(ti_src) if ti_src else 999
                                     d_ax = fp.distance_squared(ax_src) if ax_src else 999
                                     score = d_core + d_ti + d_ax

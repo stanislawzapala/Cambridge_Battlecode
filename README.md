@@ -4,7 +4,7 @@ Cambridge Battlecode challenge
 # Projekt PUDEL - Dziennik Zmian (Changelog)
 
 ## Aktualna Wersja
-**v20: Aggro**
+**v21: Def - Działająca linia obrony z launcherów, stawianie sentinelów od razu po dociągnięciu pasa do bazy**
 
 ---
 
