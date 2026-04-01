@@ -2172,54 +2172,108 @@ class Player:
 
             elif current_state == BotState.EXPLORE:
                 found_ore_pos = None
-                if not self.target or current_round % 2 == 0: # było co 5
-                    # Szuka pustej rudy, pomijając złoża zarezerwowane przez innych botów
-                    # (rezerwacja ważna przez 20 tur od ostatniego odczytu markera).
+                found_belt_target = None
+                
+                if not self.target or current_round % 2 == 0:
                     CLAIM_TTL = 20
-                    candidates = {}
+                    candidates_ore = {}
+                    candidates_belt = {}
                     
+                    # 1. Szukamy w VIP Facts (Rudy i Harvestery)
                     for pos, (env, b_type, is_enemy) in self.vip_facts.items():
-                        if env not in ORES:
-                            continue
-                        if b_type is not None:
-                            continue  # złoże już zajęte (harvester lub inny budynek)
-                        # Pomijamy złoża zarezerwowane przez kogoś innego
                         claim_turn = self.claimed_ores.get(pos, -1)
                         if claim_turn >= 0 and (current_round - claim_turn) < CLAIM_TTL:
                             continue
-                        candidates[pos] = my_pos.distance_squared(pos)
-                    if candidates:
-                        found_ore_pos = min(candidates, key=candidates.get)
+                        
+                        dist = my_pos.distance_squared(pos)
+                        
+                        # Pusta ruda
+                        if env in ORES and b_type is None:
+                            candidates_ore[pos] = dist
+                        
+                        # Harvester (nasz lub wrogi) bez podłączonej naszej sieci
+                        elif b_type == EntityType.HARVESTER:
+                            has_our_network = False
+                            for d in ORTHOGONAL_DIRECTIONS:
+                                nb = pos.add(d)
+                                if not (0 <= nb.x < map_width and 0 <= nb.y < map_height): continue
+                                nb_b_info = self.buildings.get(nb)
+                                # Używamy NETWORK (same taśmy, mosty, splittery), żeby nie liczyć innych budynków
+                                if nb_b_info and nb_b_info[0] in NETWORK and nb_b_info[1] == my_team:
+                                    has_our_network = True
+                                    break
+                            if not has_our_network:
+                                candidates_belt[pos] = dist
 
+                    # 2. Szukamy ślepych końców Conveyorów/Mostów w całej pamięci
+                    for pos, (b_type, b_team, b_meta, _) in self.buildings.items():
+                        if b_type in {EntityType.CONVEYOR,EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}:
+                            out_pos = None
+                            if b_type in {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR} and isinstance(b_meta, Direction):
+                                out_pos = pos.add(b_meta)
+                            elif b_type == EntityType.BRIDGE and isinstance(b_meta, Position):
+                                out_pos = b_meta
+                            
+                            if out_pos and (0 <= out_pos.x < map_width and 0 <= out_pos.y < map_height):
+                                claim_turn = self.claimed_ores.get(out_pos, -1)
+                                if claim_turn >= 0 and (current_round - claim_turn) < CLAIM_TTL:
+                                    continue
+                                    
+                                out_env = self.memory.get(out_pos, Environment.EMPTY)
+                                if out_env not in HARD_OBSTACLES:
+                                    out_b_info = self.buildings.get(out_pos)
+                                    # Jeśli wyjście taśmy jest puste (lub ma tylko marker/drogę) -> Ślepy Koniec!
+                                    if not out_b_info or out_b_info[0] in {None, EntityType.MARKER, EntityType.ROAD}:
+                                        dist = my_pos.distance_squared(out_pos)
+                                        candidates_belt[out_pos] = dist
+
+                    # Wybieramy najlepszego kandydata w obu kategoriach
+                    found_ore_pos = min(candidates_ore, key=candidates_ore.get) if candidates_ore else None
+                    found_belt_target = min(candidates_belt, key=candidates_belt.get) if candidates_belt else None
+
+                    # Jeśli mamy obu kandydatów, wybieramy tego, który jest fizycznie bliżej
+                    if found_ore_pos and found_belt_target:
+                        if candidates_ore[found_ore_pos] <= candidates_belt[found_belt_target]:
+                            found_belt_target = None  # Ruda jest bliżej, kasujemy wpięcie
+                        else:
+                            found_ore_pos = None      # Wpięcie jest bliżej, kasujemy rudę
+
+                # Wykonanie decyzji pozostaje bez zmian
                 if found_ore_pos is not None:
                     self.bot_state = BotState.BUILD_MINE
                     self.target = found_ore_pos
                     self.path = []
                     self.assigned_ore = found_ore_pos
                     self.bot_mine_since = current_round
-                        
-                # Jeśli nadal eksploruje i nie ma celu (lub dotarł do celu), losuje nowy.
-                # Wyjątek: jeśli cel jest polem Core, bot jest tam żeby zbudować Splitter
-                # — nie resetuj celu, sekcja Splitterów obsłuży budowę.
+                    
+                elif found_belt_target is not None:
+                    # Przerywamy EXPLORE i od razu odpalamy maszynę budującą pas!
+                    self.bot_state = BotState.BUILD_BELT
+                    self.last_bridge_node = found_belt_target
+                    self.target = found_belt_target
+                    self.path = []
+                    self.belt_chain = set()
+                    self.belt_stuck_counter = 0
+                    self.assigned_ore = found_belt_target
+
+                # Jeśli nadal eksploruje i nie ma celu (lub dotarł do celu), losuje nowy (Fala Sonaru).
                 if self.bot_state == BotState.EXPLORE:
                     if not self.target or (
                             my_pos == self.target
                             and self.target not in self.allied_core_tiles):
                         # --- FALA SONARU (ROSNĄCE OKRĘGI WOKÓŁ BAZY) ---
                         
+                        # Promień rośnie wraz z upływem gry. 
+                        current_radius = 6 + (current_round // 6)
                         
-                        # 2. Promień rośnie wraz z upływem gry. 
-                        # Np. zaczynamy od promienia 6 i powiększamy okrąg o 1 kratkę co 5 tur
-                        current_radius = 6 + (current_round // 5)
-                        
-                        # 3. Losujemy losowy kąt na tym okręgu (od 0 do 360 stopni, czyli 2*PI radianów)
+                        # Losujemy kąt
                         angle = random.uniform(0, 2 * math.pi)
                         
-                        # 4. Wyliczamy nową pozycję na obwodzie wyznaczonego koła
+                        # Wyliczamy nową pozycję na obwodzie
                         target_x = int(self.my_core_cx + current_radius * math.cos(angle))
                         target_y = int(self.my_core_cy + current_radius * math.sin(angle))
                         
-                        # 5. ZABEZPIECZENIE: Docinamy cel, żeby nie wyszedł poza granice mapy
+                        # Docinamy do granic mapy
                         target_x = max(0, min(map_width - 1, target_x))
                         target_y = max(0, min(map_height - 1, target_y))
                         
@@ -2459,6 +2513,7 @@ class Player:
                     # NOWOŚĆ: UZBRAJANIE SPLITTERA BAZOWEGO PRZED ZAKOŃCZENIEM MISJI
                     # =========================================================
                     sentinel_task = None
+                    launcher_task = None
                     is_at_base = (last_node in delivery_tiles)
 
                     if is_at_base and ct.is_in_vision(last_node):
@@ -2467,22 +2522,27 @@ class Player:
                         if b_id_ln_sp is not None and ct.get_team(b_id_ln_sp) == my_team and ct.get_entity_type(b_id_ln_sp) == EntityType.SPLITTER:
                             
                             sentinels_needed = []
+                            launchers_needed = []
+                            
                             if self.my_core_center:
-                                # Twarde pozycje dokładnie takie same jak w logice tury 150+
-                                global_sentinel_offsets = [
-                                    ( 0, -2, Direction.NORTH),   # N
-                                    ( 2, -2, Direction.NORTHEAST),# NE
-                                    ( 2,  0, Direction.EAST),     # E
-                                    ( 2,  2, Direction.SOUTHEAST),# SE
-                                    ( 0,  2, Direction.SOUTH),    # S
-                                    (-2,  2, Direction.SOUTHWEST),# SW
-                                    (-2,  0, Direction.WEST),     # W
-                                    (-2, -2, Direction.NORTHWEST),# NW
+                                core_cx, core_cy = self.my_core_center.x, self.my_core_center.y
+                                
+                                # Launchery przed Sentinelami (okrąg nr 2)
+                                # Nie blokują wejść do Splitterów!
+                                global_launcher_offsets = [
+                                    ( 0, -3, Direction.NORTH),     # przed Sentinelem N
+                                    ( 3, -3, Direction.NORTHEAST), # przed Sentinelem NE
+                                    ( 3,  0, Direction.EAST),      # przed Sentinelem E
+                                    ( 3,  3, Direction.SOUTHEAST), # przed Sentinelem SE
+                                    ( 0,  3, Direction.SOUTH),     # przed Sentinelem S
+                                    (-3,  3, Direction.SOUTHWEST), # przed Sentinelem SW
+                                    (-3,  0, Direction.WEST),      # przed Sentinelem W
+                                    (-3, -3, Direction.NORTHWEST), # przed Sentinelem NW
                                 ]
+
+                                # 1. Sprawdzamy braki w Sentinelach
                                 for ddx, ddy, facing in global_sentinel_offsets:
                                     sn_pos = Position(core_cx + ddx, core_cy + ddy)
-                                    
-                                    # Interesują nas tylko te 2 sentinele, które bezpośrednio stykają się z naszym Splitterem
                                     if last_node.distance_squared(sn_pos) <= 2:
                                         if not (0 <= sn_pos.x < map_width and 0 <= sn_pos.y < map_height): continue
                                         sn_env = self.memory.get(sn_pos, ct.get_tile_env(sn_pos) if ct.is_in_vision(sn_pos) else Environment.EMPTY)
@@ -2495,14 +2555,41 @@ class Player:
                                                 sn_type = ct.get_entity_type(sn_b_id)
                                                 sn_team = ct.get_team(sn_b_id)
                                                 if sn_team == my_team and sn_type == EntityType.SENTINEL:
-                                                    need_build = False # Już tu stoi!
+                                                    need_build = False 
                                                 elif sn_team == my_team and sn_type not in {EntityType.MARKER, EntityType.ROAD}:
-                                                    need_build = False # Jakiś inny ważny budynek, nie ruszamy
+                                                    need_build = False 
                                         if need_build:
                                             sentinels_needed.append((sn_pos, facing))
+
+                                # 2. Sprawdzamy braki w Launcherach 
+                                for ddx, ddy, facing in global_launcher_offsets:
+                                    ln_pos = Position(core_cx + ddx, core_cy + ddy)
+                                    
+                                    # KRYTYCZNA ZMIANA: Zwiększony dystans kwadratowy do 5, 
+                                    # aby Splitter mógł obsłużyć narożnego Launchera (np. odległość od 1,-2 do 3,-3)
+                                    if last_node.distance_squared(ln_pos) <= 5:
+                                        if not (0 <= ln_pos.x < map_width and 0 <= ln_pos.y < map_height): continue
+                                        ln_env = self.memory.get(ln_pos, ct.get_tile_env(ln_pos) if ct.is_in_vision(ln_pos) else Environment.EMPTY)
+                                        if ln_env in HARD_OBSTACLES: continue
+                                        
+                                        need_build = True
+                                        if ct.is_in_vision(ln_pos):
+                                            ln_b_id = ct.get_tile_building_id(ln_pos)
+                                            if ln_b_id is not None:
+                                                ln_type = ct.get_entity_type(ln_b_id)
+                                                ln_team = ct.get_team(ln_b_id)
+                                                if ln_team == my_team and ln_type == EntityType.LAUNCHER:
+                                                    need_build = False 
+                                                elif ln_team == my_team and ln_type not in {EntityType.MARKER, EntityType.ROAD}:
+                                                    need_build = False 
+                                        if need_build:
+                                            launchers_needed.append((ln_pos, facing))
                                             
+                            # Najpierw kończymy ring pierwszy (Sentinele), potem drugi (Launchery)
                             if sentinels_needed:
-                                sentinel_task = sentinels_needed[0] # Bierzemy pierwszego z brzegu
+                                sentinel_task = sentinels_needed[0] 
+                            elif launchers_needed:
+                                launcher_task = launchers_needed[0]
 
                         # Zabezpieczenie: jeśli jesteśmy w delivery_tiles, a Splittera brak i nie ma pending_splitter
                         elif self.pending_splitter is None:
@@ -2511,21 +2598,27 @@ class Player:
                                     self.pending_splitter = (last_node, sp_faces)
                                     break
 
-                    # Jeśli mamy bojowe zadanie zbrojenia, wyłączamy całkowicie poszukiwanie tras do budowy taśmociągów!
+                    # Wyłączamy poszukiwanie tras taśmociągów, jeśli mamy zadanie zbrojeniowe!
                     if sentinel_task is not None:
                         build_pos = sentinel_task[0]
                         build_target = sentinel_task[1]
                         build_mode = 'sentinel'
                         build_is_network = False
-                        source_candidates = []  # Omijamy pętlę szukania trasy
+                        source_candidates = []  
+                    elif launcher_task is not None:
+                        build_pos = launcher_task[0]
+                        build_target = launcher_task[1]
+                        build_mode = 'launcher'
+                        build_is_network = False
+                        source_candidates = []  
 
                     # =========================================================
                     # KROK 4: Sprawdź czy misja zakończona.
                     # =========================================================
                     mission_done = False
                     if is_at_base:
-                        # W bazie kończymy misję TYLKO gdy Splitter stoi i zadań na sentinele nie ma
-                        if self.pending_splitter is None and sentinel_task is None:
+                        # W bazie kończymy misję TYLKO gdy Splitter stoi i obu zadań na obronę nie ma
+                        if self.pending_splitter is None and sentinel_task is None and launcher_task is None:
                             if ct.is_in_vision(last_node):
                                 b_id_ln = ct.get_tile_building_id(last_node)
                                 if b_id_ln is not None and ct.get_team(b_id_ln) == my_team and ct.get_entity_type(b_id_ln) == EntityType.SPLITTER:
@@ -2848,10 +2941,14 @@ class Player:
                                         if ct.can_build_sentinel(build_pos, build_target):
                                             ct.build_sentinel(build_pos, build_target)
                                             built = True
+                                    elif build_mode == 'launcher':
+                                        if ct.can_build_launcher(build_pos, build_target):
+                                            ct.build_launcher(build_pos, build_target)
+                                            built = True
 
                                     if built:
                                         self.belt_stuck_counter = 0  
-                                        if build_mode == 'sentinel':
+                                        if build_mode in ('sentinel', 'launcher'):
                                             self.target = last_node
                                             self.path = []
                                         elif build_mode == 'conveyor':
