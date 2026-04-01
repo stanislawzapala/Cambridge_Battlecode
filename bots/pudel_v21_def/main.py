@@ -162,6 +162,8 @@ class Player:
         self.target: Position | None = None
         self.path: list[Direction] = []
         self.spawn_round: int = 0 
+        # ---> NOWOŚĆ: Pamięć odciętych stref (Blacklist) <---
+        self.unreachable_targets: dict[Position, int] = {}
         
         # --- WYDOBYCIE ---
         # Złoże które dany bot aktualnie obsługuje (BUILD_MINE / BUILD_BELT)
@@ -207,7 +209,7 @@ class Player:
 
        
 
-    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False) -> list[Direction] | None:
+    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False, ignore_buildings: bool = False) -> list[Direction] | None:
         """
         Zwraca listę kierunków za pomocą optymistycznego Frontier A* (Frontier A-Star). 
         Możemy ustawić stop_adjacent=True, jeśli chcemy, żeby bot zatrzymał się na polu obok celu (przydatne np. do budowania).
@@ -264,22 +266,20 @@ class Player:
                     if memory_env in HARD_OBSTACLES:
                         continue # Pamiętamy, że tu jest mur lub ruda, omijamy!
                     
-                    is_blocked = False
+                    # ---> 2. ZMIANA TUTAJ: Włącznik ignorowania budynków <---
+                    if not ignore_buildings:
+                        is_blocked = False
+                        b_info = self.buildings.get(next_pos)
+                        if b_info is not None:
+                            b_type, b_team, _, _ = b_info
+                            if b_type is not None:
+                                if b_type not in passable_types and b_type != EntityType.CORE:
+                                    is_blocked = True
+                                elif b_type == EntityType.CORE and b_team != my_team:
+                                    is_blocked = True
+                        if is_blocked:
+                            continue
 
-                    # 2. Czytamy budynki z pamięci bota
-                    b_info = self.buildings.get(next_pos)
-                    if b_info is not None:
-                        b_type, b_team, _, _ = b_info
-                        if b_type is not None:
-                            # Jeśli to nie jest droga/taśmociąg i nie jest to nasz Rdzeń, to nas blokuje
-                            if b_type not in passable_types and b_type != EntityType.CORE:
-                                is_blocked = True
-                            # Wrogi rdzeń też blokuje
-                            elif b_type == EntityType.CORE and b_team != my_team:
-                                is_blocked = True
-
-                    if is_blocked:
-                        continue
 
                     # 2. ZAPISUJEMY KOSZT
                     cost_so_far[next_pos] = new_cost
@@ -3609,8 +3609,33 @@ class Player:
                                 # KROK 2: Uderzenie w przeszkodę -> KAŻDY używa A*, żeby ładnie omijać ściany
                                 self.path = self.calculate_astar_path(
                                     ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
-                                    stop_adjacent=is_building # <--- Używamy zmiennej, żeby budowniczowie stawali krok przed, a zwiadowcy wchodzili na cel
-                                ) or [] # Jeśli A* nie znajdzie ścieżki, zostawiamy pustą listę, żeby nie próbować chodzić w ciemno
+                                    stop_adjacent=is_building 
+                                ) or [] 
+
+                                if not self.path:
+                                    # A* nie znalazł drogi. Sprawdzamy czy to wina budynków, czy twardego terenu!
+                                    terrain_path = self.calculate_astar_path(
+                                        ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
+                                        stop_adjacent=is_building, ignore_buildings=True
+                                    ) or []
+
+                                    if not terrain_path:
+                                        # Teren jest fizycznie odcięty przez mury/rudę! (Wrzucamy na Blacklistę)
+                                        self.unreachable_targets[target_pos] = current_round
+                                    
+                                    # W obu przypadkach (mur czy budynek) chwilowo nie możemy przejść, więc resetujemy cel
+                                    self.target = None
+                                    
+                                    if self.bot_state in {BotState.BUILD_MINE, BotState.BUILD_BELT}:
+                                        self.bot_state = BotState.EXPLORE
+                                        self.assigned_ore = None
+                                        self.pending_splitter = None
+                                    elif self.bot_state == BotState.SABOTEUR:
+                                        self.bot_state = BotState.HARRAS
+                                        self.assigned_ore = None
+                                        self.pending_splitter = None
+                                        
+                                    break # Kończymy turę ruchu
                     
                         # FAZA WYKONANIA
                         if self.path:

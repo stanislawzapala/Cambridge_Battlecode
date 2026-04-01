@@ -10,7 +10,10 @@ Cambridge Battlecode challenge
 
 ## To do list
 Aktualne:
-- dobry pomysł na dodatkową linię obrony: launcher przed sentinelem (odrzucający wrogie probki wchodzące na nasze splittery)
+- stawianie barier na ore
+- zapisywanie pól obok wrogich launcherów jako niedostępne (przy target)
+- build_mine niszczy i buduję drogę co chwila, gdy chce wybudować harvestera, chociaż nie ma środków, aby go zbudować, bo kilka botów robi to samo?
+- stawianie launcherów co 3 kratki przy ciągnięciu beltów
 - build_mine wywala się jak wróg postawi drogę na ore
 - jeśli harras nie trafi we wrogą bazę i tak zaczyna budować bariery
 - harras nie jest w stanie niszczyć naszych dróg aby zbudować barierę, wrogą drogę też
