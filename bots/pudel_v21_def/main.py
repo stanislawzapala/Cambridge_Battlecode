@@ -2574,17 +2574,30 @@ class Player:
 
                     if is_at_base and ct.is_in_vision(last_node):
                         b_id_ln_sp = ct.get_tile_building_id(last_node)
-                        # Splitter już stoi
+                        
+                        # Sprawdzamy czy Splitter na pewno stoi
+                        splitter_exists = False
                         if b_id_ln_sp is not None and ct.get_team(b_id_ln_sp) == my_team and ct.get_entity_type(b_id_ln_sp) == EntityType.SPLITTER:
+                            splitter_exists = True
                             
+                        if splitter_exists:
                             sentinels_needed = []
                             launchers_needed = []
                             
                             if self.my_core_center:
                                 core_cx, core_cy = self.my_core_center.x, self.my_core_center.y
                                 
-                                # Launchery przed Sentinelami (okrąg nr 2)
-                                # Nie blokują wejść do Splitterów!
+                                global_sentinel_offsets = [
+                                    ( 0, -2, Direction.NORTH),   # N
+                                    ( 2, -2, Direction.NORTHEAST),# NE
+                                    ( 2,  0, Direction.EAST),     # E
+                                    ( 2,  2, Direction.SOUTHEAST),# SE
+                                    ( 0,  2, Direction.SOUTH),    # S
+                                    (-2,  2, Direction.SOUTHWEST),# SW
+                                    (-2,  0, Direction.WEST),     # W
+                                    (-2, -2, Direction.NORTHWEST),# NW
+                                ]
+
                                 global_launcher_offsets = [
                                     ( 0, -3, Direction.NORTH),     # przed Sentinelem N
                                     ( 3, -3, Direction.NORTHEAST), # przed Sentinelem NE
@@ -2620,9 +2633,6 @@ class Player:
                                 # 2. Sprawdzamy braki w Launcherach 
                                 for ddx, ddy, facing in global_launcher_offsets:
                                     ln_pos = Position(core_cx + ddx, core_cy + ddy)
-                                    
-                                    # KRYTYCZNA ZMIANA: Zwiększony dystans kwadratowy do 5, 
-                                    # aby Splitter mógł obsłużyć narożnego Launchera (np. odległość od 1,-2 do 3,-3)
                                     if last_node.distance_squared(ln_pos) <= 5:
                                         if not (0 <= ln_pos.x < map_width and 0 <= ln_pos.y < map_height): continue
                                         ln_env = self.memory.get(ln_pos, ct.get_tile_env(ln_pos) if ct.is_in_vision(ln_pos) else Environment.EMPTY)
@@ -2641,18 +2651,18 @@ class Player:
                                         if need_build:
                                             launchers_needed.append((ln_pos, facing))
                                             
-                            # Najpierw kończymy ring pierwszy (Sentinele), potem drugi (Launchery)
                             if sentinels_needed:
                                 sentinel_task = sentinels_needed[0] 
                             elif launchers_needed:
                                 launcher_task = launchers_needed[0]
 
-                        # Zabezpieczenie: jeśli jesteśmy w delivery_tiles, a Splittera brak i nie ma pending_splitter
-                        elif self.pending_splitter is None:
-                            for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
-                                if last_node == Position(core_cx + ddx, core_cy + ddy):
-                                    self.pending_splitter = (last_node, sp_faces)
-                                    break
+                        # Zabezpieczenie: jeśli jesteśmy w delivery_tiles, a Splittera NIE MA, musimy go postawić!
+                        else:
+                            if self.pending_splitter is None:
+                                for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
+                                    if last_node == Position(core_cx + ddx, core_cy + ddy):
+                                        self.pending_splitter = (last_node, sp_faces)
+                                        break
 
                     # Wyłączamy poszukiwanie tras taśmociągów, jeśli mamy zadanie zbrojeniowe!
                     if sentinel_task is not None:
@@ -2666,7 +2676,7 @@ class Player:
                         build_target = launcher_task[1]
                         build_mode = 'launcher'
                         build_is_network = False
-                        source_candidates = []  
+                        source_candidates = []
 
                     # =========================================================
                     # KROK 4: Sprawdź czy misja zakończona.
@@ -2968,7 +2978,7 @@ class Player:
                         elif build_pos is not None and build_target is not None:
 
                             if my_pos == build_pos:
-                                if build_mode in ['conveyor', 'sentinel']:
+                                if build_mode in ['conveyor', 'sentinel', 'launcher']:
                                     away_pos = build_pos.add(build_target)
                                 else:
                                     away_pos = build_target
@@ -2998,8 +3008,8 @@ class Player:
                                             ct.build_sentinel(build_pos, build_target)
                                             built = True
                                     elif build_mode == 'launcher':
-                                        if ct.can_build_launcher(build_pos, build_target):
-                                            ct.build_launcher(build_pos, build_target)
+                                        if ct.can_build_launcher(build_pos):
+                                            ct.build_launcher(build_pos)
                                             built = True
 
                                     if built:
