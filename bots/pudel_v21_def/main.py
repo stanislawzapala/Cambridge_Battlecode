@@ -958,6 +958,62 @@ class Player:
                         ct.rotate(next_dir)
 
         # ==========================================
+        # 3.5 LOGIKA LAUNCHERA (WYRZUTNIA)
+        # ==========================================
+        elif etype == EntityType.LAUNCHER:
+            if ct.get_action_cooldown() == 0:
+                
+                # 1. Sprawdzamy, czy w zasięgu wzroku jest jakikolwiek kafelek naszej bazy
+                sees_core = False
+                for p in ct.get_nearby_tiles():
+                    b_id = ct.get_tile_building_id(p)
+                    if b_id is not None and ct.get_entity_type(b_id) == EntityType.CORE and ct.get_team(b_id) == my_team:
+                        sees_core = True
+                        break
+                
+                # Jeśli widzi bazę, realizujemy logikę "Ochrony Bazy"
+                if sees_core:
+                    best_bot_pos = None
+                    best_target_pos = None
+                    best_score = float('-inf')
+                    
+                    # Punkt odniesienia do wyliczania odległości (chcemy rzucić jak najdalej od rdzenia)
+                    core_ref = self.my_core_center if self.my_core_center else my_pos
+                    
+                    # ---> ZMIANA: Szukamy wrogów TYLKO na polach bezpośrednio przyległych (dist_sq <= 2) <---
+                    for n_id in ct.get_nearby_entities(2):
+                        if ct.get_entity_type(n_id) == EntityType.BUILDER_BOT and ct.get_team(n_id) == enemy_team:
+                            bot_pos = ct.get_position(n_id)
+                            
+                            # Mamy wroga tuż obok! Teraz skanujemy teren wokół wyrzutni, by znaleźć idealne miejsce lądowania.
+                            for dx in range(-5, 6):
+                                for dy in range(-5, 6):
+                                    tp = Position(my_pos.x + dx, my_pos.y + dy)
+                                    if not (0 <= tp.x < map_width and 0 <= tp.y < map_height):
+                                        continue
+                                    
+                                    # Silnik sam sprawdza, czy pole jest w zasięgu wyrzutu i czy lot jest legalny
+                                    if ct.can_launch(bot_pos, tp):
+                                        dist_from_launcher = my_pos.distance_squared(tp)
+                                        dist_from_core = tp.distance_squared(core_ref)
+                                        
+                                        # Premiujemy wyrzut jak najdalej stąd i jak najdalej od serca bazy
+                                        score = dist_from_launcher + dist_from_core
+                                        
+                                        if score > best_score:
+                                            best_score = score
+                                            best_bot_pos = bot_pos
+                                            best_target_pos = tp
+                                            
+                    # Jeśli znaleźliśmy wroga i legalne pole zrzutu -> RZUCAMY!
+                    if best_bot_pos and best_target_pos:
+                        ct.launch(best_bot_pos, best_target_pos)
+                        
+                else:
+                    # Miejsce na opcjonalną logikę w przyszłości dla Launcherów postawionych w terenie.
+                    pass
+        
+        # ==========================================
         # 4. LOGIKA PROBY (BUILDER_BOT)
         # ==========================================
         elif etype == EntityType.BUILDER_BOT:
