@@ -1,0 +1,3784 @@
+# Packages
+# 1. Official
+from cambc import Controller, Direction, EntityType, Environment, Position, Team, ResourceType, GameConstants
+# 2. Koszty bazowe budynków (wartości dynamicznie pobierane z silnika gry)
+CONVEYOR_BASE_COST = GameConstants.CONVEYOR_BASE_COST
+SPLITTER_BASE_COST = GameConstants.SPLITTER_BASE_COST
+BRIDGE_BASE_COST = GameConstants.BRIDGE_BASE_COST
+ARMOURED_CONVEYOR_BASE_COST = GameConstants.ARMOURED_CONVEYOR_BASE_COST
+HARVESTER_BASE_COST = GameConstants.HARVESTER_BASE_COST
+ROAD_BASE_COST = GameConstants.ROAD_BASE_COST
+BARRIER_BASE_COST = GameConstants.BARRIER_BASE_COST
+GUNNER_BASE_COST = GameConstants.GUNNER_BASE_COST
+SENTINEL_BASE_COST = GameConstants.SENTINEL_BASE_COST
+BREACH_BASE_COST = GameConstants.BREACH_BASE_COST
+LAUNCHER_BASE_COST = GameConstants.LAUNCHER_BASE_COST
+FOUNDRY_BASE_COST = GameConstants.FOUNDRY_BASE_COST
+BUILDER_BOT_BASE_COST = GameConstants.BUILDER_BOT_BASE_COST
+# 2. For random movement (for testing purposes)
+import random
+# 3. For priority queue (if we later want to implement A*)
+import heapq
+# 4. For Enum states
+from enum import Enum, auto
+# 5. Math for explore logic
+import math
+
+
+# ==========================================
+# MASZYNA STANÓW BOTA
+# ==========================================
+class BotState(Enum):
+    EXPLORE = auto()         # Losowy zwiad i roznoszenie feromonów
+    BUILD_MINE = auto()      # Znalazł złoże, idzie zbudować Harvester
+    BUILD_BELT = auto()      # Zbudował kopalnię, ciągnie taśmociąg do Bazy/Sieci
+    BUILD_BUNKER = auto()    # Idzie zbudować Bunker w newralgicznym punkcie
+    HARRAS = auto()          # Niszczenie wrogiej infrastruktury, przełącza się w tryb SABOTEUR
+    SABOTEUR = auto()        # Buduje mur wokół wrogiej bazy i wieżyczki w nią strzelające
+    ROAD_LAYER = auto()      # Wczesny zwiad (tury 1-4): biega losowo i kładzie drogi
+    KAMIKAZE = auto()        # Stawia sentinela przy wrogim harvesterze lub dokonuje autodestrukcji
+    REPAIRMAN = auto()       # Leczy i naprawia naszą sieć conveyor/most/splitter
+    FORTIFIER = auto()       # Obudowuje harvestery Sentinelami
+    SMELTER = auto()         # Buduje Foundry i podłącza do sieci
+
+# Kierunki (bez CENTRE)
+DIRECTIONS = [d for d in Direction if d != Direction.CENTRE]
+ORTHOGONAL_DIRECTIONS = [Direction.NORTH, Direction.SOUTH, Direction.EAST, Direction.WEST]
+DIR_DELTAS = {
+                    Direction.NORTH: (0, -1), Direction.SOUTH: (0, 1),
+                    Direction.EAST: (1, 0), Direction.WEST: (-1, 0),
+                    Direction.NORTHEAST: (1, -1), Direction.NORTHWEST: (-1, -1),
+                    Direction.SOUTHEAST: (1, 1), Direction.SOUTHWEST: (-1, 1)
+                }
+
+# --- MAPA I KOMUNIKACJA MIĘDZY BOTAMI ---
+ENV_TO_INT = {Environment.EMPTY: 0, Environment.WALL: 1, Environment.ORE_TITANIUM: 2, Environment.ORE_AXIONITE: 3}
+INT_TO_ENV = {v: k for k, v in ENV_TO_INT.items()}
+DIR_TO_INT = {d: i+1 for i, d in enumerate(DIRECTIONS)}
+INT_TO_DIR = {i+1: d for i, d in enumerate(DIRECTIONS)}
+
+# 15 typów budynków/jednostek (0 rezerwujemy na "Brak budynku")
+ENTITY_TYPES = [
+    EntityType.BUILDER_BOT, EntityType.CORE, EntityType.GUNNER, EntityType.SENTINEL, 
+    EntityType.BREACH, EntityType.LAUNCHER, EntityType.CONVEYOR, EntityType.SPLITTER, 
+    EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.HARVESTER, 
+    EntityType.FOUNDRY, EntityType.ROAD, EntityType.BARRIER, EntityType.MARKER
+]
+ENTITY_TO_INT = {e: i+1 for i, e in enumerate(ENTITY_TYPES)}
+INT_TO_ENTITY = {i+1: e for i, e in enumerate(ENTITY_TYPES)}
+
+
+# Typy budynków, po których można chodzić (droga, taśmociąg, pancerna taśma, marker)
+passable_types = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.MARKER, EntityType.SPLITTER}
+
+
+# --- GLOBALNE ZBIORY OPTYMALIZACYJNE  ---
+
+# 1. ŚRODOWISKO I TEREN
+ORES = {Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
+HARD_OBSTACLES = {Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE}
+
+# 2. PORUSZANIE SIĘ I NAWIGACJA (A* i uniki)
+WALKABLE_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.ROAD, EntityType.BRIDGE, EntityType.SPLITTER}
+PASSABLE_TYPES_SET = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.MARKER, EntityType.SPLITTER}
+
+# 3. STANY BOTÓW (Maszyna stanów)
+BUILDING_STATES = {BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER, BotState.SABOTEUR}
+WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER, BotState.HARRAS}
+LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.SMELTER, BotState.FORTIFIER, BotState.REPAIRMAN]
+
+# 4. SIEĆ LOGISTYCZNA
+NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
+# NETWORK_TYPES to to samo co wyżej, ale zawiera Harvestera
+NETWORK_TYPES = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER, EntityType.HARVESTER}
+
+# 5. PAMIĘĆ, STRATEGIA I CELE DO WALKI
+VIP_FRIENDLY = {EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER, EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER}
+JUNK_ENEMY_BUILDINGS = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}
+BUILDINGS_PRIO2 = {
+    EntityType.HARVESTER, EntityType.FOUNDRY, EntityType.GUNNER,
+    EntityType.SENTINEL, EntityType.BREACH, EntityType.LAUNCHER,
+    EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+    EntityType.BRIDGE, EntityType.SPLITTER, EntityType.BARRIER, EntityType.CORE
+}
+
+# 6. EKONOMIA
+COST_MAPPING = {
+    'conveyor': CONVEYOR_BASE_COST,
+    'splitter': SPLITTER_BASE_COST,
+    'bridge': BRIDGE_BASE_COST,
+    'armoured_conveyor': ARMOURED_CONVEYOR_BASE_COST,
+    'harvester': HARVESTER_BASE_COST,
+    'road': ROAD_BASE_COST,
+    'barrier': BARRIER_BASE_COST,
+    'gunner': GUNNER_BASE_COST,
+    'sentinel': SENTINEL_BASE_COST,
+    'breach': BREACH_BASE_COST,
+    'launcher': LAUNCHER_BASE_COST,
+    'foundry': FOUNDRY_BASE_COST,
+    'builder_bot': BUILDER_BOT_BASE_COST
+}
+
+# PRODUKCJA PROBEK
+TURNS_TO_SPAWN = {1, 2, 20, 50, 100, 150}
+
+
+
+
+
+
+class Player:
+    def __init__(self):
+        # ---DANE WSPÓLNE DLA DRUŻYNY ---
+        self.allied_splitter_tiles: set[Position] = set()
+        self.enemy_roads_near_core: set[Position] = set()
+        self.allied_core_tiles: set[Position] = set()
+        self.my_core_center: Position | None = None
+        self.my_core_cx: int = 0
+        self.my_core_cy: int = 0
+        self.enemy_core_tiles: set[Position] = set()
+        self.enemy_core_center: Position | None = None
+        self.enemy_core_cx: int = 0
+        self.enemy_core_cy: int = 0
+        self.enemy_core_seen: bool = False
+        
+        # CORE
+        self.number_of_bots_to_spawn: int = 0
+        self.spawned_bots_count: int = 0
+        self.bot_late_spawn_index: int = 0
+        self.starting_protocol: bool = False
+        self.core_facts_to_report: list = []
+        
+        # --- PAMIĘĆ PROBKI ---
+        self.memory: dict[Position, Environment] = {}
+        self.buildings: dict[Position, tuple[EntityType | None, Team | None, Direction | Position | None, int]] = {}
+        # Lista VIP: słownik (pos -> (env, b_type, is_enemy)) dla każdego bota
+        self.vip_facts: dict[Position, tuple[Environment, EntityType | None, bool]] = {}
+        # ore_pos → tura ostatniej rezerwacji odczytanej z markera
+        self.claimed_ores: dict[Position, int] = {}
+
+        # --- STAN I RUCH ---
+        self.bot_state: BotState | None = None
+        self.target: Position | None = None
+        self.path: list[Direction] = []
+        self.spawn_round: int = 0 
+        # ---> NOWOŚĆ: Pamięć odciętych stref (Blacklist) <---
+        self.unreachable_targets: dict[Position, int] = {}
+        
+        # --- WYDOBYCIE ---
+        # Złoże które dany bot aktualnie obsługuje (BUILD_MINE / BUILD_BELT)
+        self.assigned_ore: Position | None = None
+        # Tura wejścia w BUILD_MINE — do bezpiecznika timeout
+        self.mine_since: int = 0
+
+        # --- BUDOWANIE ---
+        # Węzeł, od którego bot aktualnie buduje sieć mostów
+        self.last_bridge_node: Position | None = None
+        # Historia węzłów bieżącej nitki mostów (do wykrywania pętli)
+        self.belt_chain: set[Position] = set()
+        # Pole Splittera do zbudowania w następnej turze po wylądowaniu mostu
+        # (bot nie może zbudować mostu i Splittera w tej samej turze)
+        self.pending_splitter: tuple[Position, Direction] | None = None
+        # Licznik tur bez postępu w BUILD_BELT — po 3 turach porzucamy budowę
+        self.belt_stuck_counter: int = 0
+        
+        # --- BEZPIECZNIKI RUCHU ---
+        # Tura w której ustawiono aktualny cel ruchu; reset po 60 turach bez dotarcia
+        self.target_since: int = 0
+        self.target_last: Position | None = None
+        
+        # --- SPECJALNE STANY ---
+        # KAMIKAZE: zapamiętana pozycja i kierunek sentinela do zbudowania
+        self.kamikaze_sentinel_pos: Position | None = None
+        self.kamikaze_sentinel_dir: Direction | None = None
+        # FORTIFIER: aktualnie obudowywany harvester
+        self.fortifier_harvest_target: Position | None = None
+        # REPAIRMAN: śledzenie HP i reagowanie na obrażenia
+        self.repairman_prev_hp: int = 30       # HP z poprzedniej tury
+        self.repairman_danger_pos: Position | None = None  # gdzie dostał obrażenia
+        self.repairman_flee_turns: int = 0     # ile tur jeszcze ucieka
+        self.repairman_markers_placed: int = 0   # ile markerów alarmowych postawił
+        # SMELTER: faza pracy ('scan'|'build'|'connect') i zapamiętana lokalizacja foundry
+        self.smelter_phase: str = 'scan'
+        self.smelter_foundry_pos:  Position | None = None
+        self.smelter_titanium_src: Position | None = None
+        self.smelter_axionite_src: Position | None = None
+        self.sabotage_target: Position | None = None
+        self.sabotage_dir: Direction | None = None
+
+
+       
+
+    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False, ignore_buildings: bool = False) -> list[Direction] | None:
+        """
+        Zwraca listę kierunków za pomocą optymistycznego Frontier A* (Frontier A-Star). 
+        Możemy ustawić stop_adjacent=True, jeśli chcemy, żeby bot zatrzymał się na polu obok celu (przydatne np. do budowania).
+        """
+        
+        # Kolejka priorytetowa: trzyma krotki (priorytet, koszt_do_tej_pory, x, y, pozycja)
+        queue = []
+        heapq.heappush(queue, (0, 0, start.x, start.y, start))
+        
+        came_from = {start: None}
+        cost_so_far = {start: 0}
+        iterations = 0
+        
+        target_node = None # Zmienna zapamiętująca, gdzie fizycznie skończyliśmy
+
+        # Najpierw posortujmy kierunki tak, aby te najbliżej celu (minimalny dystans do targetu) były pierwsze - wyciągamy tylko pierwszy kierunek
+        DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
+
+        while queue:
+            iterations += 1
+            if iterations > 2000:
+                # FRONTIER A*: Skończył się limit czasu! 
+                # Zamiast się poddawać, wyciągamy z kolejki NAJLEPSZY punkt, który A* zamierzał właśnie sprawdzić.
+                if queue:
+                    _, _, _, _, best_node = heapq.heappop(queue)
+                    target_node = best_node
+                break
+            
+            
+            # Wyciągamy kafelek, który ma NAJLEPSZY priorytet (najbliżej celu)
+            priority, current_cost, _, _, curr = heapq.heappop(queue)
+
+            if stop_adjacent and curr.distance_squared(target) <= 2:
+                target_node = curr
+                break
+            elif not stop_adjacent and curr == target:
+                target_node = curr
+                break
+            
+            
+            for d in DIRECTIONS_PREFERENCE:
+                next_pos = curr.add(d)
+                
+                if not (0 <= next_pos.x < w and 0 <= next_pos.y < h):
+                    continue
+                
+                # Każdy krok kosztuje nas 1 punkt
+                new_cost = current_cost + 1
+                
+                # Jeśli jeszcze tu nie byliśmy ALBO znaleźliśmy tańszą/szybszą ścieżkę do tego pola
+                if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
+                    
+                    memory_env = self.memory.get(next_pos, Environment.EMPTY)
+                    if memory_env in HARD_OBSTACLES:
+                        continue # Pamiętamy, że tu jest mur lub ruda, omijamy!
+                    
+                    # ---> 2. ZMIANA TUTAJ: Włącznik ignorowania budynków <---
+                    if not ignore_buildings:
+                        is_blocked = False
+                        b_info = self.buildings.get(next_pos)
+                        if b_info is not None:
+                            b_type, b_team, _, _ = b_info
+                            if b_type is not None:
+                                if b_type not in passable_types and b_type != EntityType.CORE:
+                                    is_blocked = True
+                                elif b_type == EntityType.CORE and b_team != my_team:
+                                    is_blocked = True
+                        if is_blocked:
+                            continue
+
+
+                    # 2. ZAPISUJEMY KOSZT
+                    cost_so_far[next_pos] = new_cost
+                    
+                    # 3. A*: Podstawowa heurystyka (Czebyszew)
+                    heuristic = max(abs(next_pos.x - target.x), abs(next_pos.y - target.y))
+                    
+                    # --- TIE-BREAKER (Lekarstwo na zygzaki) ---
+                    # Obliczamy wektory, żeby sprawdzić, czy zjeżdżamy z idealnej prostej
+                    dx1 = next_pos.x - target.x
+                    dy1 = next_pos.y - target.y
+                    dx2 = start.x - target.x
+                    dy2 = start.y - target.y
+                    
+                    # Iloczyn wektorowy
+                    cross_product = abs(dx1 * dy2 - dx2 * dy1)
+                    
+                    # Priorytet to: koszt + heurystyka + mała kara za zjazd z prostej linii
+                    priority = new_cost + heuristic + (cross_product * 0.0001)
+                    
+                    # Wrzucamy do kolejki
+                    heapq.heappush(queue, (priority, new_cost, next_pos.x, next_pos.y, next_pos))
+                    came_from[next_pos] = (curr, d) # type: ignore
+
+        # Odtwarzanie ścieżki
+        if target_node is None or target_node not in came_from:
+            return None 
+
+        path = []
+        curr = target_node
+        while curr != start:
+            prev_pos, move_dir = came_from[curr] # type: ignore
+            path.append(move_dir)
+            curr = prev_pos
+            
+        path.reverse() 
+        return path
+
+    
+    def can_walk_on_building(self, b_id: int, my_team: Team, ct: Controller) -> bool:
+        """
+        Sprawdza, czy można chodzić po budynku wroga (droga/taśmociąg/pancerna taśma).
+        Nie bierze pod uwagę obecności probki.
+        """
+        if b_id is None:
+            return False
+        b_type = ct.get_entity_type(b_id)
+        return b_type in WALKABLE_TYPES
+    
+
+    def pack_map_marker(self, turn: int, pos: Position, env: Environment, b_type: EntityType | None, is_enemy: bool) -> int:
+        """KANAŁ 0: Pakuje informacje o odkrytym terenie/budynku."""
+        env_val = ENV_TO_INT.get(env, 0)
+        entity_val = ENTITY_TO_INT.get(b_type, 0) if b_type else 0
+        team_val = 1 if is_enemy else 0
+        
+        msg_type = 0
+        turn &= 0b11111111111
+        x = pos.x & 0b111111
+        y = pos.y & 0b111111
+        
+        # Ostatnie 7 bitów: env (2), entity (4), team (1)
+        payload = (env_val << 5) | (entity_val << 1) | team_val
+        return (msg_type << 30) | (turn << 19) | (x << 13) | (y << 7) | payload
+
+    def pack_claim_marker(self, turn: int, ore_pos: Position) -> int:
+        """KANAŁ 1: Pakuje rezerwację złoża (bot idzie zająć się tym złożem)."""
+        msg_type = 1
+        turn &= 0b11111111111
+        x = ore_pos.x & 0b111111
+        y = ore_pos.y & 0b111111
+        payload = 0  # kanał 1 nie potrzebuje dodatkowych danych w payload
+        return (msg_type << 30) | (turn << 19) | (x << 13) | (y << 7) | payload
+    
+    
+    def unpack_marker(self, value: int) -> dict:
+        """Uniwersalny dekoder. Rozpoznaje typ i zwraca słownik z odpowiednimi kluczami."""
+        # Najpierw czytamy NAGŁÓWEK (wspólny dla wszystkich)
+        msg_type = (value >> 30) & 0b11
+        turn = (value >> 19) & 0b11111111111
+        x = (value >> 13) & 0b111111
+        y = (value >> 7) & 0b111111
+        pos = Position(x, y)
+        
+        # Ładunek (7 najmłodszych bitów)
+        payload = value & 0b1111111
+        
+        data = {'type': msg_type, 'turn': turn, 'pos': pos}
+        
+        if msg_type == 0:
+            data['is_enemy'] = (payload & 0b1) == 1
+            data['b_type'] = INT_TO_ENTITY.get((payload >> 1) & 0b1111, None)
+            data['env'] = INT_TO_ENV.get((payload >> 5) & 0b11, Environment.EMPTY)
+        elif msg_type == 1:
+            # KANAŁ 1: rezerwacja złoża — ore_pos i turn są już w nagłówku
+            data['ore_pos'] = pos  # alias dla czytelności
+            
+        return data
+
+
+    def find_nearest_vip_target(self, my_pos: Position, vip_facts: dict, 
+                                target_envs: list[Environment] = None, # type: ignore
+                                target_btypes: list[EntityType] = None, # type: ignore
+                                ownership: str = 'empty') -> Position | None:
+        """
+        Uniwersalna wyszukiwarka w bazie VIP.
+        ownership: 'empty' (brak budynku), 'mine' (nasz budynek), 'enemy' (wrogi budynek), 'any' (obojętnie)
+        """
+        nearest_pos = None
+        min_distance = float('inf')
+        
+        for pos, (env, b_type, is_enemy) in vip_facts.items():
+            # 1. FILTR TERENU (jeśli podano listę, sprawdzamy czy pasuje)
+            if target_envs is not None and env not in target_envs:
+                continue
+                
+            # 2. FILTR BUDYNKU (jeśli podano listę, sprawdzamy czy pasuje)
+            if target_btypes is not None and b_type not in target_btypes:
+                continue
+                
+            # 3. FILTR WŁASNOŚCI
+            if ownership == 'empty' and b_type is not None:
+                continue
+            if ownership == 'mine' and (b_type is None or is_enemy):
+                continue
+            if ownership == 'enemy' and (b_type is None or not is_enemy):
+                continue
+                
+            # Jeśli przeszliśmy wszystkie filtry, sprawdzamy odległość
+            dist = my_pos.distance_squared(pos)
+            if dist < min_distance:
+                min_distance = dist
+                nearest_pos = pos
+                
+        return nearest_pos
+
+
+    def building_priority(self, b_id, ct: Controller) -> int:
+        """Zwraca poziom ważności budynku na polu (0=brak, 1=marker, 2=droga, 3=reszta)."""
+        if b_id is None:
+            return 0
+        b_type = ct.get_entity_type(b_id)
+        if b_type == EntityType.MARKER:
+            return 1
+        if b_type in {EntityType.ROAD, EntityType.BARRIER}:
+            return 2
+        return 3
+
+    def can_replace_with(self, pos, new_priority: int, my_team, ct: Controller) -> bool:
+        """Czy można zniszczyć co stoi na pos, żeby postawić coś o priorytecie new_priority?
+        Można niszczyć tylko rzeczy o NIŻSZYM priorytecie (nie równym).
+        Niszczymy własne budynki (jeśli mniej ważne) oraz markery przeciwnika."""
+        if not ct.is_in_vision(pos):
+            return True  # nie wiemy co tam stoi — optymistycznie OK
+        b_id = ct.get_tile_building_id(pos)
+        if b_id is None:
+            return True  # puste
+        if ct.get_team(b_id) != my_team:
+            # Cudzy budynek — możemy zastąpić tylko marker przeciwnika
+            return ct.get_entity_type(b_id) == EntityType.MARKER
+        existing_priority = self.building_priority(b_id, ct)
+        return new_priority > existing_priority
+
+    def _can_afford_build(self, ct: Controller, build_mode: str) -> bool:
+        """
+        Sprawdza czy drużyna ma surowce na zbudowanie budynku,
+        używając zewnętrznych stałych kosztów.
+        """
+
+        # Pobieramy aktualne zasoby i mnożnik
+        titanium_owned, axionite_owned = ct.get_global_resources()
+        scale = ct.get_scale_percent() / 100.0
+        
+        # Wyciągamy bazowe wartości z krotki przypisanej do danego trybu
+        base_ti, base_ax = COST_MAPPING[build_mode]
+
+        # Obliczamy realny koszt (rzutowanie na int, bo koszty są zazwyczaj całkowite)
+        cost_ti = int(base_ti * scale)
+        cost_ax = int(base_ax * scale)
+
+        return titanium_owned >= cost_ti and axionite_owned >= cost_ax
+
+    def _ore_already_claimed_by_other(self, ct: Controller, my_id: int, my_team, ore_pos: Position, current_round: int) -> bool:
+        """Zwraca True jeśli złoże jest już obsługiwane przez innego bota:
+        - aktywna rezerwacja w claimed_ores (< 20 tur temu), LUB
+        - inny nasz bot fizycznie stoi na sąsiednim polu złoża (distance_sq <= 2).
+        NIE liczymy siebie samego."""
+        CLAIM_TTL = 20
+        claim_turn = self.claimed_ores.get(ore_pos, -1)
+        if claim_turn >= 0 and (current_round - claim_turn) < CLAIM_TTL:
+            return True
+        # Sprawdzamy fizyczną obecność innego bota w zasięgu wzroku
+        if ct.is_in_vision(ore_pos):
+            w = ct.get_map_width()
+            h = ct.get_map_height()
+            for dx in range(-1, 2):
+                for dy in range(-1, 2):
+                    nb = Position(ore_pos.x + dx, ore_pos.y + dy)
+                    if not (0 <= nb.x < w and 0 <= nb.y < h):
+                        continue
+                    if not ct.is_in_vision(nb):
+                        continue
+                    try:
+                        other_bot_id = ct.get_tile_builder_bot_id(nb)
+                    except Exception:
+                        continue
+                    if other_bot_id is not None and other_bot_id != my_id:
+                        try:
+                            if ct.get_team(other_bot_id) == my_team:
+                                return True
+                        except Exception:
+                            continue
+        return False
+
+    def _place_claim_marker_near_ore(self, ct: Controller, my_id: int, my_team, ore_pos: Position, current_round: int, forbidden_tiles: set) -> None:
+        """
+        Stawia marker-rezerwację złoża. Najpierw próbuje na samym polu złoża,
+        potem na sąsiednich polach. Może zniszczyć blokujący marker (nasz lub wrogi)
+        albo naszą drogę. Marker koduje pozycję złoża w kanale 1.
+        """
+        map_width = ct.get_map_width()
+        map_height = ct.get_map_height()
+
+        # Kandydaci: najpierw samo złoże, potem 8 sąsiadów
+        candidates = [ore_pos] + [
+            Position(ore_pos.x + dx, ore_pos.y + dy)
+            for dx in range(-1, 2) for dy in range(-1, 2)
+            if not (dx == 0 and dy == 0)
+        ]
+
+        for nb in candidates:
+            if not (0 <= nb.x < map_width and 0 <= nb.y < map_height):
+                continue
+            if nb in forbidden_tiles:
+                continue
+            if not ct.is_in_vision(nb):
+                continue
+            # Dla sąsiednich pól (nie złoża) — nie budujemy na ścianie ani innej rudzie
+            if nb != ore_pos:
+                nb_env = ct.get_tile_env(nb)
+                if nb_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                    continue
+            # Sprawdzamy co stoi — można zastąpić marker lub naszą drogę
+            nb_b_id = ct.get_tile_building_id(nb)
+            if nb_b_id is not None:
+                nb_b_type = ct.get_entity_type(nb_b_id)
+                nb_b_team = ct.get_team(nb_b_id)
+                if nb_b_type == EntityType.MARKER:
+                    if ct.can_destroy(nb):
+                        ct.destroy(nb)
+                elif nb_b_type == EntityType.ROAD and nb_b_team == my_team:
+                    if ct.can_destroy(nb):
+                        ct.destroy(nb)
+                else:
+                    continue  # inny budynek — pomijamy
+            if ct.can_place_marker(nb):
+                ct.place_marker(nb, self.pack_claim_marker(current_round, ore_pos))
+                return
+
+    def _calculate_core_center(self, core_tiles: set) -> Position | None:
+        """
+        Oblicza geometryczny środek bazy (Core) na podstawie zbioru jej kafelków.
+        Zwraca obiekt Position lub None, jeśli zbiór kafelków jest pusty.
+        """
+        if not core_tiles:
+            return 
+        
+        core_xs = [p.x for p in core_tiles]
+        core_ys = [p.y for p in core_tiles]
+
+        calculated_core_cx = sum(core_xs) // len(core_xs)
+        calculated_core_cy = sum(core_ys) // len(core_ys)
+        
+        return Position(calculated_core_cx, calculated_core_cy)
+    
+    def _estimate_enemy_core_center(self, my_pos: Position):
+        """
+        Inteligentnie estymuje środek bazy 3x3 wroga nawet na podstawie widocznych kafelków.
+        Gdy jest ich mniej niż 5 estymuje o 1 dalej od bota niż wynika ze średniej z kafelków.
+        """
+        if not self.enemy_core_tiles:
+            return
+        
+        xs = [p.x for p in self.enemy_core_tiles]
+        ys = [p.y for p in self.enemy_core_tiles]
+        
+        # Jeśli widzimy pełen rozstaw od brzegu do brzegu (3x3)
+        if max(xs) - min(xs) == 2 and max(ys) - min(ys) == 2:
+            self.enemy_core_cx = min(xs) + 1
+            self.enemy_core_cy = min(ys) + 1
+            self.enemy_core_center = Position(self.enemy_core_cx, self.enemy_core_cy)
+            self.enemy_core_seen = True
+            return
+            
+        if self.enemy_core_seen:
+            return # Mamy już idealny środek, nie psujemy
+            
+        # Mamy tylko fragment. Liczymy średnią z tego co widzimy:
+        avg_x = sum(xs) / len(xs)
+        avg_y = sum(ys) / len(ys)
+        
+        # Wypychamy środek bazy o 1 kratkę w stronę ODWROTNĄ niż stoi bot
+        dx = 1 if avg_x > my_pos.x else -1 if avg_x < my_pos.x else 0
+        dy = 1 if avg_y > my_pos.y else -1 if avg_y < my_pos.y else 0
+        
+        est_cx = int(round(avg_x)) + dx
+        est_cy = int(round(avg_y)) + dy
+        
+        self.enemy_core_cx = est_cx
+        self.enemy_core_cy = est_cy
+        self.enemy_core_center = Position(est_cx, est_cy)
+
+
+    def _get_8way_dir_to(self, start: Position, target: Position) -> Direction:
+        """
+        Zwraca najbliższy z 8 kierunków (N, NE, E, SE, S, SW, W, NW) 
+        od punktu start do target.
+        """
+        dx = target.x - start.x
+        dy = target.y - start.y
+        
+        if dx == 0 and dy == 0:
+            return Direction.NORTH  # Zabezpieczenie na wypadek tych samych współrzędnych
+            
+        # math.atan2 zwraca kąt w radianach. 
+        # Ponieważ w siatkach 2D oś Y rośnie w dół, kąty układają się tak:
+        # Wschód=0, Południe=pi/2, Zachód=pi, Północ=-pi/2
+        angle = math.atan2(dy, dx)
+        
+        # Dzielimy pełne koło (2*pi) na 8 równych sektorów po 45 stopni
+        # round() elegancko "przyciąga" wektor do najbliższego środka sektora
+        octant = round(8 * angle / (2 * math.pi)) % 8
+        
+        mapping = {
+            0: Direction.EAST,
+            1: Direction.SOUTHEAST,
+            2: Direction.SOUTH,
+            3: Direction.SOUTHWEST,
+            4: Direction.WEST,
+            5: Direction.NORTHWEST,
+            6: Direction.NORTH,
+            7: Direction.NORTHEAST
+        }
+        
+        return mapping[octant]
+    
+    
+    
+    def run(self, ct: Controller) -> None: # type: ignore
+        current_round = ct.get_current_round()
+        map_width = ct.get_map_width()
+        map_height = ct.get_map_height()
+        my_team = ct.get_team()
+        enemy_team = Team.B if my_team == Team.A else Team.A
+        scale = ct.get_scale_percent() / 100.0
+        my_tit, my_ax = ct.get_global_resources()
+        etype = ct.get_entity_type()
+        my_pos = ct.get_position()
+        my_id = ct.get_id()
+
+        # ==========================================
+        # 1. LOGIKA BAZY (CORE) 
+        # ==========================================
+        if etype == EntityType.CORE:
+            # PROTOKÓŁ ROZRUCHOWY — jednorazowo
+            if not self.starting_protocol:
+                found_walls = []
+                found_ores = []
+
+                for pos in ct.get_nearby_tiles():
+                    env = ct.get_tile_env(pos)
+                    if env == Environment.WALL:
+                        found_walls.append((pos, env, None, False))
+                    elif env in ORES:
+                        found_ores.append((pos, env, None, False))
+                
+                # Rudy są na końcu, więc .pop() zdejmie je jako pierwsze
+                self.core_facts_to_report = found_walls + found_ores
+                self.starting_protocol = True
+            
+            # B) DYREKTYWA SYNAPSA ZERO — markery z odkryciami z protokołu rozruchowego
+            if self.core_facts_to_report:
+                rep_pos, rep_env, rep_btype, rep_is_enemy = self.core_facts_to_report[-1]
+                place_pos = None
+                for adj_pos in ct.get_nearby_tiles(8):
+                    if ct.can_place_marker(adj_pos):
+                        place_pos = adj_pos
+                        break
+                if place_pos:
+                    ct.place_marker(place_pos, self.pack_map_marker(current_round, rep_pos, rep_env, rep_btype, rep_is_enemy))
+                    self.core_facts_to_report.pop()
+
+            # D) REJESTR WROGICH DRÓG PRZY CORE — gdy zniknie droga = sygnał do spawnu zamiennika
+            # Skanujemy wszystkie pola w zasięgu distance_sq ≤ 4 od centrum core (otoczka 5×5)
+            current_enemy_roads: set[Position] = set()
+            core_center_pos = ct.get_position()  # centrum core
+            for dx in range(-2, 3):
+                for dy in range(-2, 3):
+                    p = Position(core_center_pos.x + dx, core_center_pos.y + dy)
+                    if 0 <= p.x < map_width and 0 <= p.y < map_height:
+                        if not ct.is_in_vision(p):
+                            continue
+                        b_id_p = ct.get_tile_building_id(p)
+                        if (b_id_p is not None
+                                and ct.get_entity_type(b_id_p) == EntityType.ROAD
+                                and ct.get_team(b_id_p) != my_team):
+                            current_enemy_roads.add(p)
+
+            # Drogi które były w rejestrze a teraz zniknęły = zniszczone (autodestrukcja bota)
+            destroyed_roads = self.enemy_roads_near_core - current_enemy_roads
+            self.enemy_roads_near_core = current_enemy_roads
+
+            # C) PRODUKCJA BOTÓW (Odporna na opóźnienia i braki surowców)
+            if ct.get_action_cooldown() == 0:
+                # 1. Liczymy matematycznie, ile botów POWINNO już być na mapie
+                expected_early_bots = len([t for t in TURNS_TO_SPAWN if t <= current_round])
+                expected_late_bots = 0
+                if current_round >= 150:
+                    expected_late_bots = 1 + (current_round - 150) // 12
+                    
+                total_expected_bots = min(20, expected_early_bots + expected_late_bots)
+                
+                # 2. Sprawdzamy, czy mamy zaległości i czy stać nas na produkcję!
+                if self.spawned_bots_count < total_expected_bots:
+                    if self._can_afford_build(ct, 'builder_bot'):
+                        
+                        map_center = Position(map_width // 2, map_height // 2)
+                        core_pos = ct.get_position()
+                        best_directions = sorted(DIRECTIONS, key=lambda d: core_pos.add(d).distance_squared(map_center))
+
+                        for d in best_directions:
+                            cand_pos = core_pos.add(d)
+                            # can_spawn sprawdza czy pole jest wolne
+                            if ct.can_spawn(cand_pos):
+                                ct.spawn_builder(cand_pos)
+                                self.spawned_bots_count += 1
+                                break
+                               
+            # Zamiana Axionite na Titanium
+            if my_ax > 10:
+                ct.convert(my_ax - 10)
+
+        # ==========================================
+        # 2. LOGIKA SENTINELA
+        # ==========================================
+        elif etype == EntityType.SENTINEL:
+            # Sentinel strzela gdy ma amunicję, cooldown = 0.
+            # Priorytet celów: 1. boty wroga, 2. budynki wroga (nie drogi), 3. drogi wroga.
+            if ct.get_action_cooldown() == 0 and ct.get_ammo_amount() > 0:
+                my_dir = ct.get_direction()
+
+                def _sentinel_can_fire(target_pos, target_is_bot=False):
+                    # KRYTYCZNA ZMIANA: Jeśli celem jest wrogi bot, ignorujemy budynki pod spodem!
+                    if not target_is_bot:
+                        b_id_on_target = ct.get_tile_building_id(target_pos)
+                        b_team = ct.get_team(b_id_on_target)
+                        
+                        if (b_id_on_target is not None
+                                and b_team == my_team
+                                and ct.get_entity_type(b_id_on_target) in NETWORK):
+                            return False
+                        
+                        # Nie strzelamy w harvestera, z którego się zasilamy
+                        if ct.get_entity_type(b_id_on_target) == EntityType.HARVESTER and b_team == enemy_team:
+                            if my_pos.distance_squared(target_pos) == 1:
+                                direction_to_harvester = my_pos.direction_to(target_pos)
+                                if my_dir != direction_to_harvester:
+                                    return False
+                                    
+                    return ct.can_fire(target_pos)
+
+                fired = False
+                # Prio 1: boty wroga
+                for nearby_id in ct.get_nearby_entities():
+                    if ct.get_entity_type(nearby_id) != EntityType.BUILDER_BOT:
+                        continue
+                    if ct.get_team(nearby_id) != enemy_team:
+                        continue
+                    target_pos = ct.get_position(nearby_id)
+                    # Flaga target_is_bot=True zdejmuje bezpieczniki ochrony infrastruktury!
+                    if _sentinel_can_fire(target_pos, target_is_bot=True):
+                        ct.fire(target_pos)
+                        fired = True
+                        break
+                        
+                # Prio 2: budynki wroga (nie drogi, nie markery)
+                if not fired:
+                    for nearby_id in ct.get_nearby_entities():
+                        if ct.get_entity_type(nearby_id) == EntityType.MARKER:
+                            continue
+                        if ct.get_team(nearby_id) != enemy_team:
+                            continue
+                        if ct.get_entity_type(nearby_id) not in BUILDINGS_PRIO2:
+                            continue
+                        target_pos = ct.get_position(nearby_id)
+                        if _sentinel_can_fire(target_pos, target_is_bot=False):
+                            ct.fire(target_pos)
+                            fired = True
+                            break
+                            
+                # Prio 3: drogi wroga
+                if not fired:
+                    for nearby_id in ct.get_nearby_entities():
+                        if ct.get_entity_type(nearby_id) != EntityType.ROAD:
+                            continue
+                        if ct.get_team(nearby_id) != enemy_team:
+                            continue
+                        target_pos = ct.get_position(nearby_id)
+                        if _sentinel_can_fire(target_pos, target_is_bot=False):
+                            ct.fire(target_pos)
+                            break
+
+        
+        # ==========================================
+        # 3. LOGIKA GUNNERA (OBROTOWA WIEŻA, ZASIĘG 2)
+        # ==========================================
+        elif etype == EntityType.GUNNER:
+            # Gunner strzela w linii prostej na max 2 kratki. Przelatuje przez markery.
+            # Obrót kosztuje 10 Ti i zmienia kierunek o 45 stopni (1 krok).
+            if ct.get_action_cooldown() == 0 and ct.get_ammo_amount() > 0:
+                my_dir = ct.get_direction()
+                # --- INTELIGENTNY SKANER LINII ZASILAJĄCEJ (KROPLÓWKI) ---
+                # Rekurencyjnie znajdujemy całą wrogą sieć, która nas zasila
+                safe_feeders = set()
+                to_check = [my_pos]
+                visited = {my_pos}
+                
+                while to_check:
+                    curr = to_check.pop(0)
+                    for d_feed in ORTHOGONAL_DIRECTIONS:
+                        nb = curr.add(d_feed)
+                        # Zabezpieczenie przed wyjściem poza mapę i zapętleniem
+                        if nb in visited or not (0 <= nb.x < map_width and 0 <= nb.y < map_height):
+                            continue
+                        if not ct.is_in_vision(nb):
+                            continue
+                            
+                        b_id_nb = ct.get_tile_building_id(nb)
+                        if b_id_nb is None or ct.get_team(b_id_nb) != enemy_team:
+                            continue
+                            
+                        b_type_nb = ct.get_entity_type(b_id_nb)
+                        is_feeder = False
+                        
+                        if b_type_nb == EntityType.HARVESTER:
+                            is_feeder = True
+                        elif b_type_nb == EntityType.CONVEYOR:
+                            try:
+                                if nb.add(ct.get_direction(b_id_nb)) == curr:
+                                    is_feeder = True
+                            except Exception: pass
+                        elif b_type_nb == EntityType.BRIDGE:
+                            try:
+                                if ct.get_bridge_target(b_id_nb) == curr:
+                                    is_feeder = True
+                            except Exception: pass
+                        elif b_type_nb == EntityType.SPLITTER:
+                            try:
+                                # Splitter zasila nas, jeśli nie stoimy od strony jego wejścia
+                                input_pos = nb.add(ct.get_direction(b_id_nb).opposite())
+                                if curr != input_pos:
+                                    is_feeder = True
+                            except Exception: pass
+                            
+                        if is_feeder:
+                            safe_feeders.add(nb)
+                            to_check.append(nb)
+                            visited.add(nb)
+
+                best_target = None
+                best_dir = None
+                best_priority = 999  # 1: Bot, 2: Budynek, 3: Droga
+
+                # Sprawdzamy wszystkie 8 kierunków
+                # Sprawdzamy wszystkie 8 kierunków
+                for d in DIRECTIONS:
+                    dx, dy = DIR_DELTAS[d]
+                    target_in_this_dir = None
+                    target_prio = 999
+                    
+                    # Gunner ma zasięg euclidean_distance_squared <= 13
+                    # (czyli 3 pola w pionie/poziomie, 2 pola po przekątnej)
+                    step = 1
+                    while (dx * step)**2 + (dy * step)**2 <= 13:
+                        p = Position(my_pos.x + dx * step, my_pos.y + dy * step)
+                        
+                        # Sprawdzamy czy nie wyszliśmy poza mapę
+                        if not (0 <= p.x < map_width and 0 <= p.y < map_height):
+                            break
+                            
+                        # Pobieramy dane o polu
+                        env = ct.get_tile_env(p) if ct.is_in_vision(p) else self.memory.get(p, Environment.EMPTY)
+                        b_id = ct.get_tile_building_id(p) if ct.is_in_vision(p) else None
+                        bot_id = ct.get_tile_builder_bot_id(p) if ct.is_in_vision(p) else None
+                        
+                        found_solid_obstacle = False
+                        
+                        # 1. Czy na polu stoi BOT? (Zatrzymuje strzał)
+                        if bot_id is not None:
+                            found_solid_obstacle = True
+                            if ct.get_team(bot_id) == enemy_team:
+                                target_in_this_dir = p
+                                target_prio = 1 # Najwyższy priorytet
+                                
+                        # 2. Czy na polu stoi BUDYNEK?
+                        elif b_id is not None:
+                            bt = ct.get_entity_type(b_id)
+                            # Markery ignorujemy (strzał leci przez nie dalej)
+                            if bt != EntityType.MARKER:
+                                found_solid_obstacle = True
+                                if ct.get_team(b_id) == enemy_team:
+                                    
+                                    # Sprawdzamy, czy wrogi budynek jest na liście naszej kroplówki
+                                    if p in safe_feeders:
+                                        pass  # Nietykalny - ignorujemy cel!
+                                    elif bt == EntityType.ROAD:
+                                        target_in_this_dir = p
+                                        target_prio = 3 # Najniższy priorytet
+                                    else:
+                                        target_in_this_dir = p
+                                        target_prio = 2 # Średni priorytet
+                                        
+                        # 3. Czy to twardy teren? (Zatrzymuje strzał)
+                        elif env in HARD_OBSTACLES:
+                            found_solid_obstacle = True
+                            
+                        # Jeśli trafiliśmy na cokolwiek solidnego (bot, budynek, ściana), 
+                        # promień lasera się zatrzymuje - NIE sprawdzamy kolejnej kratki w tym kierunku.
+                        if found_solid_obstacle:
+                            break 
+                            
+                        # Zwiększamy krok, jeśli nie uderzyliśmy w ścianę/budynek
+                        step += 1
+                            
+                    # Po zbadaniu CAŁEJ dostępnej linii w danym kierunku sprawdzamy, czy znaleźliśmy lepszy cel
+                    if target_in_this_dir and target_prio < best_priority:
+                        # Możemy zmienić cel tylko, jeśli nas na to stać
+                        rotate_cost = int(10 * scale)
+                        if d == my_dir or my_tit >= rotate_cost:
+                            best_priority = target_prio
+                            best_target = target_in_this_dir
+                            best_dir = d
+
+                # --- FAZA AKCJI GUNNERA ---
+                if best_target and best_dir:
+                    # Jeśli patrzymy prosto na cel -> OGNIA!
+                    if best_dir == my_dir:
+                        if ct.can_fire(best_target):
+                            ct.fire(best_target)
+                    # Jeśli nie patrzymy na cel -> OBRÓT O 45 STOPNI
+                    else:
+                        # Tarcza zegara, żeby wyliczyć najkrótszą drogę obrotu
+                        dir_order = [
+                            Direction.NORTH, Direction.NORTHEAST, Direction.EAST, 
+                            Direction.SOUTHEAST, Direction.SOUTH, Direction.SOUTHWEST, 
+                            Direction.WEST, Direction.NORTHWEST
+                        ]
+                        idx_curr = dir_order.index(my_dir)
+                        idx_tgt = dir_order.index(best_dir)
+                        
+                        # Sprawdzamy, w którą stronę jest bliżej (w lewo czy w prawo)
+                        diff = (idx_tgt - idx_curr) % 8
+                        if diff <= 4:
+                            next_dir = dir_order[(idx_curr + 1) % 8]  # W prawo (Zgodnie ze wskazówkami)
+                        else:
+                            next_dir = dir_order[(idx_curr - 1) % 8]  # W lewo (Przeciwnie do wskazówek)
+                            
+                        # Silnik zgłosi wyjątek, jeśli spróbujemy obrócić się o więcej niż 1 krok, 
+                        # dlatego przekazujemy wyliczony next_dir (dokładnie 45 stopni obok obecnego)
+                        ct.rotate(next_dir)
+
+        # ==========================================
+        # 3.5 LOGIKA LAUNCHERA (WYRZUTNIA)
+        # ==========================================
+        elif etype == EntityType.LAUNCHER:
+            if ct.get_action_cooldown() == 0:
+                
+                # 1. Sprawdzamy, czy w zasięgu wzroku jest jakikolwiek kafelek naszej bazy
+                sees_core = False
+                for p in ct.get_nearby_tiles():
+                    b_id = ct.get_tile_building_id(p)
+                    if b_id is not None and ct.get_entity_type(b_id) == EntityType.CORE and ct.get_team(b_id) == my_team:
+                        sees_core = True
+                        break
+                
+                # Jeśli widzi bazę, realizujemy logikę "Ochrony Bazy"
+                if sees_core:
+                    best_bot_pos = None
+                    best_target_pos = None
+                    best_score = float('-inf')
+                    
+                    # Punkt odniesienia do wyliczania odległości (chcemy rzucić jak najdalej od rdzenia)
+                    core_ref = self.my_core_center if self.my_core_center else my_pos
+                    
+                    # ---> ZMIANA: Szukamy wrogów TYLKO na polach bezpośrednio przyległych (dist_sq <= 2) <---
+                    for n_id in ct.get_nearby_entities(2):
+                        if ct.get_entity_type(n_id) == EntityType.BUILDER_BOT and ct.get_team(n_id) == enemy_team:
+                            bot_pos = ct.get_position(n_id)
+                            
+                            # Mamy wroga tuż obok! Teraz skanujemy teren wokół wyrzutni, by znaleźć idealne miejsce lądowania.
+                            for dx in range(-5, 6):
+                                for dy in range(-5, 6):
+                                    tp = Position(my_pos.x + dx, my_pos.y + dy)
+                                    if not (0 <= tp.x < map_width and 0 <= tp.y < map_height):
+                                        continue
+                                    
+                                    # Silnik sam sprawdza, czy pole jest w zasięgu wyrzutu i czy lot jest legalny
+                                    if ct.can_launch(bot_pos, tp):
+                                        dist_from_launcher = my_pos.distance_squared(tp)
+                                        dist_from_core = tp.distance_squared(core_ref)
+                                        
+                                        # Premiujemy wyrzut jak najdalej stąd i jak najdalej od serca bazy
+                                        score = dist_from_launcher + dist_from_core
+                                        
+                                        if score > best_score:
+                                            best_score = score
+                                            best_bot_pos = bot_pos
+                                            best_target_pos = tp
+                                            
+                    # Jeśli znaleźliśmy wroga i legalne pole zrzutu -> RZUCAMY!
+                    if best_bot_pos and best_target_pos:
+                        ct.launch(best_bot_pos, best_target_pos)
+                        
+                else:
+                    # Miejsce na opcjonalną logikę w przyszłości dla Launcherów postawionych w terenie.
+                    pass
+        
+        # ==========================================
+        # 4. LOGIKA PROBY (BUILDER_BOT)
+        # ==========================================
+        elif etype == EntityType.BUILDER_BOT:
+            
+            # INICJALIZACJA PAMIĘCI (Z wykorzystaniem "okienek czasowych")
+            if self.bot_state is None:
+                
+                # TURA I HP
+                self.spawn_round = current_round
+                self.repairman_prev_hp = ct.get_hp()
+
+                # Przydzielanie ról na podstawie tego, w jakiej fazie gry bot się urodził
+                if current_round <= 2:
+                    # Boty początkowe (z tury 1 i 2)
+                    self.bot_state = BotState.HARRAS
+                    self.target = Position(map_width // 2, map_height // 2)
+                elif current_round <= 80:
+                    # Boty wczesne (z tury 20 i 50)
+                    self.bot_state = BotState.EXPLORE
+                elif current_round <= 140:
+                    # Szef logistyki z tury 100 (Nawet jak wyjdzie w 115, zostanie budowniczym Bunkra)
+                    self.bot_state = BotState.BUILD_BUNKER
+                else:
+                    # Maszyna losująca dla LATE_STATES (tury 150+)
+                    # max() chroni przed ujemnymi wartościami, gdyby bot miał monstrualne opóźnienie
+                    offset = max(0, current_round - 150)
+                    type_index = (offset // 12) % len(LATE_STATES)
+                    self.bot_state = LATE_STATES[type_index]
+                
+                
+            
+            
+            # ==========================================
+            # 1. SKANOWANIE I AKTUALIZACJA MAPY W PAMIĘCI
+            # ==========================================
+            for pos in ct.get_nearby_tiles():
+                # 1. PAMIĘĆ STATYCZNA (Teren - to się nigdy nie zmienia)
+                if pos not in self.memory:
+                    env = ct.get_tile_env(pos)
+                    if env in HARD_OBSTACLES:
+                        self.memory[pos] = env
+                        # Jeśli to ważne odkrycie (ściana lub ruda), dodajemy do VIP Facts
+                        if env in ORES:
+                            self.vip_facts[pos] = (env, None, False)
+                    
+                # 2. PAMIĘĆ DYNAMICZNA i ODCZYT FEROMONÓW (BUDYNKI + MARKERY)
+                b_id = ct.get_tile_building_id(pos)
+                if b_id is not None:
+                    # Ktoś tu coś zbudował (lub budynek nadal stoi) -> Nadpisujemy
+                    b_type = ct.get_entity_type(b_id)
+                    b_team = ct.get_team(b_id)
+                    # Zbieranie informacji o kierunku networku
+                    b_meta = None
+                    if b_type in {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.SPLITTER, EntityType.SENTINEL, EntityType.GUNNER, EntityType.BREACH}:
+                        try:
+                            b_meta = ct.get_direction(b_id)
+                        except Exception:
+                            pass
+                    elif b_type == EntityType.BRIDGE:
+                        try:
+                            b_meta = ct.get_bridge_target(b_id)
+                        except Exception:
+                            pass
+
+                    self.buildings[pos] = (b_type, b_team, b_meta, current_round)
+                    
+                    # >>> Zapisujemy kafelki naszej bazy (widzimy je zaraz po spawnie) <<<
+                    if b_type == EntityType.CORE and b_team == my_team:
+                        self.allied_core_tiles.add(pos)
+                    # >>> Zapisujemy kafelki WROGIEJ bazy <<<
+                    elif b_type == EntityType.CORE and b_team == enemy_team:
+                        self.enemy_core_tiles.add(pos)
+                    # >>> Zapisujemy nasze Splittery wokół bazy <<<
+                    if b_type == EntityType.SPLITTER and b_team == my_team:
+                        self.allied_splitter_tiles.add(pos)
+
+                    # --- KTO WCHODZI NA LISTĘ VIP? ---
+                    # Wyciągamy PRAWDZIWY teren z pamięci (żeby nie nadpisać rudy pustką!)
+                    real_env = self.memory.get(pos, ct.get_tile_env(pos))
+                    
+                    # 1. WSZYSTKIE budynki wroga
+                    if b_team == enemy_team:
+                        if b_type not in JUNK_ENEMY_BUILDINGS:
+                            self.vip_facts[pos] = (real_env, b_type, True)
+                    
+                    # 2. NASZE strategiczne budynki (Kopalnie, Wieże, Huty)
+                    elif b_team == my_team:
+                        if b_type in VIP_FRIENDLY:
+                            self.vip_facts[pos] = (real_env, b_type, False)
+
+                    # CZY TO NASZ MARKER? (Rozpakowujemy informację)
+                    if b_type == EntityType.MARKER and b_team == my_team:
+                        marker_val = ct.get_marker_value(b_id)
+                        data = self.unpack_marker(marker_val)
+                        
+                        if data['type'] == 0:  # KANAŁ 0: AKTUALIZACJA MAPY
+                            m_pos = data['pos']
+                            m_turn = data['turn']
+                            
+                            # A) Aktualizujemy teren z markera (jeśli go jeszcze nie znamy)
+                            if m_pos not in self.memory and data['env'] in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                                self.memory[m_pos] = data['env']
+                            
+                            # B) Aktualizujemy budynki z markera (Zabezpieczenie Timestampem!)
+                            known_b = self.buildings.get(m_pos)
+                            last_seen = known_b[3] if known_b else -1
+                            
+                            if m_turn > last_seen:
+                                m_team = enemy_team if data['is_enemy'] else my_team
+                                if not data['b_type']: m_team = None
+                                self.buildings[m_pos] = (data['b_type'], m_team, None, m_turn)
+
+                                # --- KOMPLEKSOWA AKTUALIZACJA VIP FACTS ---
+                                real_env_marker = self.memory.get(m_pos, data['env'])
+
+                                if data['b_type'] is not None:
+                                    # Marker mówi, że ktoś coś tu zbudował
+                                    if data['is_enemy']:
+                                        if data['b_type'] not in JUNK_ENEMY_BUILDINGS:
+                                            self.vip_facts[m_pos] = (real_env_marker, data['b_type'], True)
+                                    else:
+                                        # To NASZ budynek
+                                        if data['b_type'] in VIP_FRIENDLY:
+                                            self.vip_facts[m_pos] = (real_env_marker, data['b_type'], False)
+                                else:
+                                    # Marker mówi, że na polu NIE MA budynku. Czy pod spodem jest ruda?
+                                    if data['env'] in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                                        self.vip_facts[m_pos] = (data['env'], None, False)
+                                    elif m_pos in self.vip_facts:
+                                        # Jeśli to zwykły pusty piach, czyścimy z VIP
+                                        del self.vip_facts[m_pos]
+
+                        elif data['type'] == 1:  # KANAŁ 1: REZERWACJA ZŁOŻA
+                            # Inny bot zadeklarował, że idzie zająć się tym złożem.
+                            # Zapisujemy rezerwację tylko jeśli jest nowsza niż dotychczas znana
+                            # ORAZ dotyczy złoża innego niż nasze własne (nie blokujemy sami siebie).
+                            ore_p = data['ore_pos']
+                            ore_t = data['turn']
+                            if ore_p != self.assigned_ore:
+                                existing_claim = self.claimed_ores.get(ore_p, -1)
+                                if ore_t > existing_claim:
+                                    self.claimed_ores[ore_p] = ore_t
+
+                else:
+                    # Pole jest PUSTE. Usuwamy z pamięci budynków, jeśli wcześniej był tam jakiś budynek
+                    self.buildings[pos] = (None, None, None, current_round) # Oznaczamy jako puste z aktualnym timestampem
+                    
+                    if pos in self.vip_facts:
+                        # Budynku nie ma. Ale czy pod spodem jest ruda?
+                        env_here = self.memory.get(pos, Environment.EMPTY)
+                        if env_here in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                            # Zostawiamy/przywracamy informację o samej rudzie
+                            self.vip_facts[pos] = (env_here, None, False)
+                        else:
+                            # To był budynek na pustym polu i został zniszczony. Kasujemy ducha.
+                            del self.vip_facts[pos]
+
+            # ==========================================
+            # 1.5 GLOBALNE WYLICZENIE ŚRODKA SOJUSZNICZEJ I WROGIEJ BAZY (DLA WSZYSTKICH STANÓW)
+            # ==========================================
+            # NASZA BAZA
+            if not self.my_core_center and self.allied_core_tiles:
+                self.my_core_center = self._calculate_core_center(self.allied_core_tiles)
+                if self.my_core_center:
+                    self.my_core_cx = self.my_core_center.x
+                    self.my_core_cy = self.my_core_center.y
+
+            # WROGA BAZA
+            # 1. Opcja A: Widzimy (lub widzieliśmy) kafelki wrogiego rdzenia na żywo
+            if self.enemy_core_tiles and not self.enemy_core_seen:
+                self._estimate_enemy_core_center(my_pos)
+                if self.enemy_core_center:
+                    self.enemy_core_cx = self.enemy_core_center.x
+                    self.enemy_core_cy = self.enemy_core_center.y
+                
+                # Jeśli znamy przynajmniej połowę rdzenia (5 z 9 kafelków), uznajemy go za w pełni odkryty
+                if len(self.enemy_core_tiles) >= 5:
+                    self.enemy_core_seen = True
+
+            # 2. Opcja B: Nie widzieliśmy bazy wroga, ale znamy własną -> ESTYMUJEMY (Symetria)
+            elif not self.enemy_core_center and self.my_core_center:
+                self.enemy_core_cx = map_width - 1 - self.my_core_cx
+                self.enemy_core_cy = map_height - 1 - self.my_core_cy
+                self.enemy_core_center = Position(self.enemy_core_cx, self.enemy_core_cy)
+
+            # ==========================================
+            # 2. OBSŁUGA SPLITTERÓW (niezależna od stanu, od tury 100)
+            # ==========================================
+            # Budowa Foundry (SMELTER) ma pierwszeństwo — Smelter nie przerywa swojej misji
+            if current_round >= 100 and self.my_core_center and self.bot_state != BotState.SMELTER:
+                
+                knight_offsets = [
+                    ( 1, -2, Direction.SOUTH),  # NNE  → faces SOUTH
+                    ( 2, -1, Direction.WEST),   # ENE  → faces WEST
+                    ( 2,  1, Direction.WEST),   # ESE  → faces WEST
+                    ( 1,  2, Direction.NORTH),  # SSE  → faces NORTH
+                    (-1,  2, Direction.NORTH),  # SSW  → faces NORTH
+                    (-2,  1, Direction.EAST),   # WSW  → faces EAST
+                    (-2, -1, Direction.EAST),   # WNW  → faces EAST
+                    (-1, -2, Direction.SOUTH),  # NNW  → faces SOUTH
+                ]
+                for ddx, ddy, faces in knight_offsets:
+                    sp_pos = Position(self.my_core_cx + ddx, self.my_core_cy + ddy)
+                    if not (0 <= sp_pos.x < map_width and 0 <= sp_pos.y < map_height):
+                        continue
+                    sp_env = self.memory.get(sp_pos, ct.get_tile_env(sp_pos) if ct.is_in_vision(sp_pos) else Environment.EMPTY)
+                    if sp_env in HARD_OBSTACLES:
+                        continue
+                    # Aktualizujemy globalny set delivery tiles
+                    self.allied_splitter_tiles.add(sp_pos)
+                    # Czy ten Splitter już stoi?
+                    if not ct.is_in_vision(sp_pos):
+                        continue
+                    b_id_sp = ct.get_tile_building_id(sp_pos)
+                    already_built = (b_id_sp is not None and ct.get_entity_type(b_id_sp) == EntityType.SPLITTER)
+                    if already_built:
+                        continue
+                    # Brakuje tego Splittera.
+                    my_pos = ct.get_position()
+
+                    # Sprawdź czy blokuje go wroga droga
+                    enemy_road_blocks_sp = False
+                    if ct.is_in_vision(sp_pos):
+                        b_id_sp_check = ct.get_tile_building_id(sp_pos)
+                        if (b_id_sp_check is not None
+                                and ct.get_entity_type(b_id_sp_check) == NETWORK
+                                and ct.get_team(b_id_sp_check) != my_team):
+                            enemy_road_blocks_sp = True
+
+                    if enemy_road_blocks_sp:
+                        # Wroga droga blokuje Splittera — wejdź na nią i dokonaj autodestrukcji
+                        if my_pos == sp_pos:
+                            if ct.can_fire(sp_pos):
+                                ct.fire(sp_pos)
+                        else:
+                            self.target = sp_pos
+                            self.path = []
+                        break
+                    elif my_pos.distance_squared(sp_pos) <= 2 and ct.get_action_cooldown() == 0:
+                        # Splitter (priorytet 3) może zastąpić marker i drogę (priorytety 1, 2)
+                        if self.can_replace_with(sp_pos, 3, my_team, ct) and ct.can_destroy(sp_pos):
+                            ct.destroy(sp_pos)
+                        if ct.can_build_splitter(sp_pos, faces):
+                            ct.build_splitter(sp_pos, faces)
+                            self.allied_splitter_tiles.add(sp_pos)
+                            break
+                    elif self.bot_state == BotState.EXPLORE and self.target not in self.allied_core_tiles:
+                        # Jesteśmy w EXPLORE i nie idziemy już do Core — wysyłamy się do pola Core
+                        # z którego można zbudować ten Splitter
+                        for core_tile in self.allied_core_tiles:
+                            if core_tile.distance_squared(sp_pos) <= 2:
+                                self.target = core_tile
+                                self.path = []
+                                break
+                        break  # Jeden brakujący Splitter na raz wystarczy
+
+            # ==========================================
+            # 2b. OBSŁUGA SENTINELI WOKÓŁ CORE (od tury 300)
+            # ==========================================
+            # Budowa Foundry (SMELTER) ma pierwszeństwo
+            if current_round >= 150 and self.my_core_center and self.bot_state != BotState.SMELTER:
+                
+                sentinel_offsets = [
+                    ( 0, -2, Direction.NORTH),   # N
+                    ( 2, -2, Direction.NORTHEAST),# NE
+                    ( 2,  0, Direction.EAST),     # E
+                    ( 2,  2, Direction.SOUTHEAST),# SE
+                    ( 0,  2, Direction.SOUTH),    # S
+                    (-2,  2, Direction.SOUTHWEST),# SW
+                    (-2,  0, Direction.WEST),     # W
+                    (-2, -2, Direction.NORTHWEST),# NW
+                ]
+                for ddx, ddy, facing in sentinel_offsets:
+                    sn_pos = Position(self.my_core_cx + ddx, self.my_core_cy + ddy)
+                    if not (0 <= sn_pos.x < map_width and 0 <= sn_pos.y < map_height):
+                        continue
+                    sn_env = self.memory.get(sn_pos, ct.get_tile_env(sn_pos) if ct.is_in_vision(sn_pos) else Environment.EMPTY)
+                    if sn_env in HARD_OBSTACLES:
+                        continue
+                    # Czy ten Sentinel już stoi?
+                    if not ct.is_in_vision(sn_pos):
+                        continue
+                    b_id_sn = ct.get_tile_building_id(sn_pos)
+                    already_built = (b_id_sn is not None and ct.get_entity_type(b_id_sn) == EntityType.SENTINEL)
+                    if already_built:
+                        continue
+                    # Brakuje tego Sentinela.
+                    # Sprawdź czy blokuje go droga przeciwnika
+                    enemy_road_blocks = False
+                    if ct.is_in_vision(sn_pos):
+                        b_id_sn_check = ct.get_tile_building_id(sn_pos)
+                        if (b_id_sn_check is not None
+                                and ct.get_entity_type(b_id_sn_check) in NETWORK
+                                and ct.get_team(b_id_sn_check) != my_team):
+                            enemy_road_blocks = True
+
+                    if enemy_road_blocks:
+                        # Droga przeciwnika blokuje — wejdź na nią i dokonaj autodestrukcji.
+                        # Builder Bot zadaje 20 damage (droga ma 10 HP) — niszczy ją.
+                        if my_pos == sn_pos:
+                            if ct.can_fire(sn_pos):
+                                ct.fire(sn_pos)  # kończy wykonanie natychmiast
+                        else:
+                            # Idź dokładnie NA sn_pos (nie obok) — w każdym stanie
+                            self.target = sn_pos
+                            self.path = []
+                        break
+                    elif my_pos.distance_squared(sn_pos) <= 2 and ct.get_action_cooldown() == 0:
+                        # Sentinel (priorytet 3) może zastąpić marker i drogę (własną)
+                        if self.can_replace_with(sn_pos, 3, my_team, ct) and ct.can_destroy(sn_pos):
+                            ct.destroy(sn_pos)
+                        if ct.can_build_sentinel(sn_pos, facing):
+                            ct.build_sentinel(sn_pos, facing)
+                            break
+                    elif self.bot_state == BotState.EXPLORE and self.target not in self.allied_core_tiles:
+                        # W EXPLORE — idź do pola Core obok brakującego Sentinela
+                        for core_tile in self.allied_core_tiles:
+                            if core_tile.distance_squared(sn_pos) <= 2:
+                                self.target = core_tile
+                                self.path = []
+                                break
+                        break  # Jeden brakujący Sentinel na raz wystarczy
+
+            # ==========================================
+            # 3. MASZYNA STANÓW (MÓZG) - Decyzje i Akcje
+            # ==========================================
+            current_state = self.bot_state
+
+            # PRZEJŚCIE ROAD_LAYER → EXPLORE po turze 200
+            if current_state == BotState.ROAD_LAYER and current_round >= 200:
+                self.bot_state = BotState.EXPLORE
+                self.target = None
+                self.path = []
+                current_state = BotState.EXPLORE
+
+            # PO TURZE 400: istniejące boty (spawnione przed 400) przechodzą w REPAIRMAN
+            # — ale tylko gdy są w stanach "wolnych" (nie przerywamy aktywnych misji)
+            IDLE_STATES = {BotState.ROAD_LAYER}
+            if (current_round >= 200
+                    and current_state in IDLE_STATES
+                    and self.spawn_round < 200):
+                self.bot_state = BotState.REPAIRMAN
+                self.target = None
+                self.path = []
+                current_state = BotState.REPAIRMAN
+
+            # --- PRIORYTET: pending_splitter ---
+                pending = self.pending_splitter
+                if pending is not None:
+                    pend_pos, pend_dir = pending
+                    b_id_pend = ct.get_tile_building_id(pend_pos) if ct.is_in_vision(pend_pos) else None
+                    splitter_there = (b_id_pend is not None and ct.get_entity_type(b_id_pend) == EntityType.SPLITTER)
+                    
+                    if splitter_there:
+                        self.pending_splitter = None
+                    else:
+                        # --- Wykrywanie wroga na miejscu splittera ---
+                        is_enemy = (b_id_pend is not None and ct.get_team(b_id_pend) == enemy_team and ct.get_entity_type(b_id_pend) != EntityType.MARKER)
+                        if is_enemy:
+                            if my_pos == pend_pos:
+                                if ct.get_action_cooldown() == 0 and ct.can_fire(pend_pos):
+                                    ct.fire(pend_pos) # BUM! Taranujemy!
+                            else:
+                                if self.target != pend_pos:
+                                    self.target = pend_pos
+                                    self.path = []
+                        elif ct.get_action_cooldown() == 0 and my_pos.distance_squared(pend_pos) <= 2:
+                            if self.can_replace_with(pend_pos, 3, my_team, ct) and ct.can_destroy(pend_pos):
+                                ct.destroy(pend_pos)
+                            if ct.can_build_splitter(pend_pos, pend_dir):
+                                ct.build_splitter(pend_pos, pend_dir)
+                                self.allied_splitter_tiles.add(pend_pos)
+                                self.pending_splitter = None
+                        else:
+                            if self.target != pend_pos:
+                                self.target = pend_pos
+                                self.path = []
+            
+            elif current_state == BotState.ROAD_LAYER:
+                # Wczesny zwiadowca-drogowiec (tury 1–199):
+                # biega losowo po mapie i kładzie drogi na pustych polach
+                # oraz na markerach (własnych i przeciwnika).
+                # Gdy w zasięgu wzroku jest złoże rudy, nadaje mu priorytet
+                # i stara się obudować je drogą dookoła (blokada dostępu dla wroga).
+                # Budowanie drogi (nie obudowywanie) wymaga >= 200 Tytanu.
+
+                has_titanium = my_tit > 1.2 * HARVESTER_BASE_COST[0]
+
+                # --- PRIORYTET: obudowywanie złóż widzianych w tym momencie ---
+                # (nie wymaga limitu surowcowego)
+                ore_fence_target = None
+                for ore_pos, (ore_env, ore_btype, _) in self.vip_facts.items():
+                    if ore_env not in ORES:
+                        continue
+                    if not ct.is_in_vision(ore_pos):
+                        continue
+
+                    # Sprawdzamy samo złoże — czy ma już drogę lub harvester?
+                    # Jeśli nie, dodajemy jako kandydata (droga na złożu = "rezerwacja")
+                    ore_b_id = ct.get_tile_building_id(ore_pos)
+                    if ore_b_id is None or ct.get_entity_type(ore_b_id) == EntityType.MARKER:
+                        # Brak drogi/harvestera na złożu — to kandydat
+                        if ore_fence_target is None or my_pos.distance_squared(ore_pos) < my_pos.distance_squared(ore_fence_target):
+                            ore_fence_target = ore_pos
+
+                    # Sprawdzamy wszystkich 8 sąsiadów złoża
+                    for dx in range(-1, 2):
+                        for dy in range(-1, 2):
+                            if dx == 0 and dy == 0:
+                                continue
+                            nb = Position(ore_pos.x + dx, ore_pos.y + dy)
+                            if not (0 <= nb.x < map_width and 0 <= nb.y < map_height):
+                                continue
+                            nb_env = self.memory.get(nb, ct.get_tile_env(nb) if ct.is_in_vision(nb) else Environment.EMPTY)
+                            if nb_env in HARD_OBSTACLES:
+                                continue
+                            if not ct.is_in_vision(nb):
+                                continue
+                            nb_b_id = ct.get_tile_building_id(nb)
+                            if nb_b_id is not None:
+                                nb_b_type = ct.get_entity_type(nb_b_id)
+                                if nb_b_type in [EntityType.ROAD, EntityType.HARVESTER]:
+                                    continue
+                                PROTECTED = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+                                             EntityType.BRIDGE, EntityType.SPLITTER,
+                                             EntityType.FOUNDRY, EntityType.BARRIER,
+                                             EntityType.GUNNER, EntityType.SENTINEL,
+                                             EntityType.BREACH, EntityType.LAUNCHER}
+                                if ct.get_team(nb_b_id) == my_team and nb_b_type in PROTECTED:
+                                    continue
+                                if nb_b_type != EntityType.MARKER:
+                                    continue
+                            if ore_fence_target is None or my_pos.distance_squared(nb) < my_pos.distance_squared(ore_fence_target):
+                                ore_fence_target = nb
+
+                if ore_fence_target is not None:
+                    # Obudowujemy złoże — cel nadpisany, limit surowcowy nie obowiązuje
+                    if self.target != ore_fence_target:
+                        self.target = ore_fence_target
+                        self.path = []
+                elif has_titanium:
+                    # Mamy surowce — losowy zwiad z kładzeniem drogi
+                    target_pos = self.target
+                    target_is_wall = (target_pos and
+                        self.memory.get(target_pos) in
+                        HARD_OBSTACLES)
+                    if not target_pos or my_pos == target_pos or target_is_wall:
+                        self.target = Position(
+                            random.randint(0, map_width - 1),
+                            random.randint(0, map_height - 1)
+                        )
+                        self.path = []
+                else:
+                    # Za mało surowców — zwykły eksplorer (losowy ruch, bez kładzenia drogi)
+                    target_pos = self.target
+                    target_is_wall = (target_pos and
+                        self.memory.get(target_pos) in
+                        HARD_OBSTACLES)
+                    if not target_pos or my_pos == target_pos or target_is_wall:
+                        self.target = Position(
+                            random.randint(0, map_width - 1),
+                            random.randint(0, map_height - 1)
+                        )
+                        self.path = []
+
+                # --- AKCJA: kładziemy drogę NA POLU POD BOTEM lub NA ZŁOŻU ---
+                # Dozwolone zawsze przy obudowywaniu złoża (ore_fence_target != None),
+                # przy zwykłym zwiadzie tylko jeśli has_titanium.
+                if ct.get_action_cooldown() == 0 and (ore_fence_target is not None or has_titanium):
+                    # Jeśli celem jest samo złoże i jesteśmy obok — budujemy na złożu
+                    build_road_pos = my_pos
+                    if (ore_fence_target is not None
+                            and ore_fence_target in self.vip_facts
+                            and self.vip_facts[ore_fence_target][0] in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]
+                            and my_pos.distance_squared(ore_fence_target) <= 2
+                            and my_pos != ore_fence_target):
+                        build_road_pos = ore_fence_target
+
+                    tile_b_id = ct.get_tile_building_id(build_road_pos)
+                    can_lay_road = False
+                    if tile_b_id is None:
+                        can_lay_road = True
+                    else:
+                        tb_type = ct.get_entity_type(tile_b_id)
+                        if tb_type == EntityType.MARKER:
+                            if ct.can_destroy(build_road_pos):
+                                ct.destroy(build_road_pos)
+                            can_lay_road = True
+                    if can_lay_road and ct.can_build_road(build_road_pos):
+                        ct.build_road(build_road_pos)
+
+            elif current_state == BotState.KAMIKAZE:
+                # ==========================================
+                # KAMIKAZE: stawia Sentinela przy wrogim harvesterze lub dokonuje autodestrukcji
+                # ==========================================
+                # Szukamy celu — wrogi harvester
+                target_pos = self.target
+                if not target_pos or current_round % 10 == 0:
+                    best_enemy_harv = None
+                    best_dist = float('inf')
+                    for pos, (env, b_type, is_enemy) in self.vip_facts.items():
+                        if b_type == EntityType.HARVESTER and is_enemy:
+                            d = my_pos.distance_squared(pos)
+                            if d < best_dist:
+                                best_dist = d
+                                best_enemy_harv = pos
+                    if best_enemy_harv:
+                        if self.target != best_enemy_harv:
+                            self.target = best_enemy_harv
+                            self.path = []
+                            self.kamikaze_sentinel_pos = None
+                            self.kamikaze_sentinel_dir = None
+                    else:
+                        # Brak wroga w pamięci. Przechodzimy w tryb aktywnego szukania (zwiad).
+                        target_is_wall = (self.target and self.memory.get(self.target) in HARD_OBSTACLES)
+                        
+                        # Losujemy nowy cel, jeśli nie mamy żadnego, jeśli dotarliśmy na miejsce, lub jeśli cel to ściana
+                        if not self.target or my_pos == self.target or target_is_wall:
+                            self.target = Position(
+                                random.randint(0, map_width - 1),
+                                random.randint(0, map_height - 1)
+                            )
+                            self.path = []
+                            self.kamikaze_sentinel_pos = None
+                            self.kamikaze_sentinel_dir = None
+
+                if self.target and self.bot_state == BotState.KAMIKAZE:
+                    harv_pos = self.target
+                    # Cel bota to sąsiednie pole przy harvesterze (nie sam harvester — nie można wejść)
+                    at_harv = my_pos.distance_squared(harv_pos) <= 2 and ct.is_in_vision(harv_pos)
+                    if at_harv:
+                        if self.kamikaze_sentinel_pos is None:
+                            # Znajdź stronę sieci wroga
+                            network_dir = None
+                            enemy_network_pos = None
+                            for d in ORTHOGONAL_DIRECTIONS:
+                                nb = harv_pos.add(d)
+                                if not ct.is_in_vision(nb):
+                                    continue
+                                nb_b_id = ct.get_tile_building_id(nb)
+                                if nb_b_id is None:
+                                    continue
+                                nb_bt = ct.get_entity_type(nb_b_id)
+                                if (ct.get_team(nb_b_id) == enemy_team and
+                                        nb_bt in NETWORK):
+                                    network_dir = d
+                                    enemy_network_pos = nb
+                                    break
+                            if network_dir is not None:
+                                # Szukamy pola prostopadłego do sieci wroga
+                                perp_dirs = [d for d in ORTHOGONAL_DIRECTIONS if d != network_dir and d != network_dir.opposite()]
+                                sentinel_placed = False
+                                for pdir in perp_dirs:
+                                    sp = harv_pos.add(pdir)
+                                    if not (0 <= sp.x < map_width and 0 <= sp.y < map_height):
+                                        continue
+                                    if not ct.is_in_vision(sp):
+                                        continue
+                                    sp_env = ct.get_tile_env(sp)
+                                    if sp_env in HARD_OBSTACLES:
+                                        continue
+                                    sp_b_id = ct.get_tile_building_id(sp)
+                                    if sp_b_id is not None:
+                                        sp_bt = ct.get_entity_type(sp_b_id)
+                                        sp_team = ct.get_team(sp_b_id)
+                                        if sp_bt == EntityType.MARKER:
+                                            pass  # można zastąpić
+                                        elif sp_bt == EntityType.ROAD and sp_team == my_team:
+                                            pass  # nasza droga — można zastąpić
+                                        else:
+                                            continue
+                                    # Kierunek SKOŚNY: kombinacja pdir (prostopadły) i network_dir
+                                    # np. sieć od N, sentinel na E → facing = NE
+                                    # Wyznaczamy: obracamy network_dir w stronę pdir
+                                    # Jeśli pdir to rotacja_right(network_dir) → facing = network_dir.rotate_right()
+                                    # Jeśli pdir to rotacja_left(network_dir) → facing = network_dir.rotate_left()
+                                    if pdir == network_dir.rotate_right():
+                                        facing_diag = network_dir.rotate_right()
+                                    else:
+                                        facing_diag = network_dir.rotate_left()
+                                    self.kamikaze_sentinel_pos = sp
+                                    self.kamikaze_sentinel_dir = facing_diag
+                                    sentinel_placed = True
+                                    break
+                                if not sentinel_placed:
+                                    # Brak miejsca na sentinela — wejdź na sieć wroga i atakuj
+                                    if enemy_network_pos and my_pos == enemy_network_pos:
+                                        if ct.can_fire(enemy_network_pos):
+                                            ct.fire(enemy_network_pos)
+                                    elif enemy_network_pos:
+                                        self.target = enemy_network_pos
+                                        self.path = []
+                            else:
+                                # Nie ma sieci wroga — szukamy nowego celu
+                                self.target = None
+                                self.kamikaze_sentinel_pos = None
+
+                        # Buduj sentinela jeśli mamy obliczoną pozycję
+                        spos = self.kamikaze_sentinel_pos
+                        sdir = self.kamikaze_sentinel_dir
+                        if spos is not None and sdir is not None:
+                            if my_pos.distance_squared(spos) <= 2 and ct.get_action_cooldown() == 0:
+                                sb_id = ct.get_tile_building_id(spos) if ct.is_in_vision(spos) else None
+                                if sb_id is not None:
+                                    sb_bt = ct.get_entity_type(sb_id)
+                                    if sb_bt in {EntityType.MARKER, EntityType.ROAD} and ct.can_destroy(spos):
+                                        ct.destroy(spos)
+                                if ct.can_build_sentinel(spos, sdir):
+                                    ct.build_sentinel(spos, sdir)
+                                    # Misja zakończona
+                                    self.bot_state = BotState.KAMIKAZE
+                                    self.target = None
+                                    self.kamikaze_sentinel_pos = None
+                            elif my_pos.distance_squared(spos) > 2:
+                                # Idź do pozycji sentinela
+                                self.target = spos
+                                self.path = []
+
+            elif current_state == BotState.REPAIRMAN:
+                # ==========================================
+                # REPAIRMAN: leczy uszkodzone elementy sieci, naprawia przerwy.
+                # Gdy otrzyma obrażenia — ucieka, stawia markery alarmowe przy core, wraca.
+                # ==========================================
+
+                # --- DETEKCJA OBRAŻEŃ ---
+                current_hp = ct.get_hp()
+                prev_hp = self.repairman_prev_hp
+                if current_hp < prev_hp:
+                    # Otrzymaliśmy obrażenia — zapisz pozycję zagrożenia i uciekaj
+                    self.repairman_danger_pos = my_pos
+                    self.repairman_flee_turns = 15  # uciekaj przez 15 tur
+                    self.repairman_markers_placed = 0
+                    self.target = None
+                    self.path = []
+                self.repairman_prev_hp = current_hp
+
+                # --- TRYB UCIECZKI ---
+                flee_turns = self.repairman_flee_turns
+                if flee_turns > 0:
+                    self.repairman_flee_turns = flee_turns - 1
+                    danger_pos = self.repairman_danger_pos
+                    # Uciekaj do core (najdalej od danger_pos)
+                    if self.allied_core_tiles:
+                        core_list = list(self.allied_core_tiles)
+                        # Cel: pole core najdalej od danger_pos
+                        if danger_pos:
+                            flee_target = max(core_list, key=lambda p: p.distance_squared(danger_pos))
+                        else:
+                            flee_target = random.choice(core_list)
+                        if self.target != flee_target:
+                            self.target = flee_target
+                            self.path = []
+                    # Postaw markery alarmowe przy core (do 3 markerów)
+                    markers_placed = self.repairman_markers_placed
+                    if markers_placed < 3 and danger_pos and ct.get_action_cooldown() == 0:
+                        for adj_pos in ct.get_nearby_tiles(2):
+                            if ct.can_place_marker(adj_pos):
+                                # Kodujemy pozycję zagrożenia w kanale 0 jako wrogi marker
+                                ct.place_marker(adj_pos, self.pack_map_marker(
+                                    current_round, danger_pos, Environment.EMPTY, EntityType.GUNNER, True))
+                                self.repairman_markers_placed = markers_placed + 1
+                                break
+                else:
+                    # --- TRYB NORMALNEJ PRACY ---
+                    danger_pos = self.repairman_danger_pos
+                    healed_this_turn = False
+
+                    # Priorytet 1: Lecz pobliskie uszkodzone nasze budynki sieci
+                    if ct.get_action_cooldown() == 0:
+                        for adj_pos in ct.get_nearby_tiles(2):
+                            if not ct.is_in_vision(adj_pos):
+                                continue
+                            b_id_r = ct.get_tile_building_id(adj_pos)
+                            if b_id_r is None:
+                                continue
+                            if ct.get_team(b_id_r) != my_team:
+                                continue
+                            if ct.get_entity_type(b_id_r) not in NETWORK_TYPES:
+                                continue
+                            if ct.get_hp(b_id_r) < ct.get_max_hp(b_id_r):
+                                if ct.can_heal(adj_pos):
+                                    ct.heal(adj_pos)
+                                    healed_this_turn = True
+                                    break
+
+                    # Priorytet 2: Wykryj i napraw przerwy w sieci (ślepy koniec conveyora/mostu)
+                    if not healed_this_turn and ct.get_action_cooldown() == 0:
+                        for adj_pos in ct.get_nearby_tiles():
+                            if not ct.is_in_vision(adj_pos):
+                                continue
+                            b_id_r = ct.get_tile_building_id(adj_pos)
+                            if b_id_r is None:
+                                continue
+                            if ct.get_team(b_id_r) != my_team:
+                                continue
+                            b_type_r = ct.get_entity_type(b_id_r)
+                            # Sprawdź conveyor — jego wyjście (pole wskazywane) jest puste?
+                            if b_type_r == EntityType.CONVEYOR:
+                                try:
+                                    out_dir = ct.get_direction(b_id_r)
+                                    out_pos = adj_pos.add(out_dir)
+                                    if not (0 <= out_pos.x < map_width and 0 <= out_pos.y < map_height):
+                                        continue
+                                    if not ct.is_in_vision(out_pos):
+                                        continue
+                                    out_b = ct.get_tile_building_id(out_pos)
+                                    out_env = ct.get_tile_env(out_pos)
+                                    if out_env in HARD_OBSTACLES:
+                                        continue
+                                    if out_b is None or (ct.get_entity_type(out_b) == EntityType.MARKER):
+                                        # Ślepy koniec — napraw: postaw conveyor z out_pos w kierunku core
+                                        if my_pos.distance_squared(out_pos) <= 2:
+                                            if out_b is not None and ct.can_destroy(out_pos):
+                                                ct.destroy(out_pos)
+                                            # Buduj kolejny conveyor w kierunku core
+                                            if self.my_core_center:
+                                                repair_dir = out_pos.direction_to(Position(self.my_core_cx, self.my_core_cy))
+                                                # Upewnij się że to kierunek ortogonalny
+                                                for rd in ORTHOGONAL_DIRECTIONS:
+                                                    if rd == repair_dir or rd == out_pos.direction_to(Position(self.my_core_cx, self.my_core_cy)):
+                                                        if ct.can_build_conveyor(out_pos, rd):
+                                                            ct.build_conveyor(out_pos, rd)
+                                                            healed_this_turn = True
+                                                            break
+                                        else:
+                                            self.target = out_pos
+                                            self.path = []
+                                        break
+                                except Exception:
+                                    pass
+                            # Sprawdź most — jego target jest pusty lub zniszczony?
+                            elif b_type_r == EntityType.BRIDGE:
+                                try:
+                                    bridge_target = ct.get_bridge_target(b_id_r)
+                                    if not ct.is_in_vision(bridge_target):
+                                        continue
+                                    bt_b = ct.get_tile_building_id(bridge_target)
+                                    bt_env = ct.get_tile_env(bridge_target)
+                                    if bt_env in HARD_OBSTACLES:
+                                        continue
+                                    if bt_b is None or (ct.get_entity_type(bt_b) == EntityType.MARKER):
+                                        # Most do naprawy — zbuduj conveyor na miejscu lądowania
+                                        if my_pos.distance_squared(bridge_target) <= 2:
+                                            if bt_b is not None and ct.can_destroy(bridge_target):
+                                                ct.destroy(bridge_target)
+                                            if self.my_core_center:
+                                                repair_dir = bridge_target.direction_to(Position(self.my_core_cx, self.my_core_cy))
+                                                for rd in ORTHOGONAL_DIRECTIONS:
+                                                    if ct.can_build_conveyor(bridge_target, rd):
+                                                        ct.build_conveyor(bridge_target, rd)
+                                                        healed_this_turn = True
+                                                        break
+                                        else:
+                                            self.target = bridge_target
+                                            self.path = []
+                                        break
+                                except Exception:
+                                    pass
+
+                    # Priorytet 3: Znajdź uszkodzony budynek sieci w zasięgu wzroku
+                    if not healed_this_turn:
+                        best_repair_pos = None
+                        best_repair_dist = float('inf')
+                        for adj_pos in ct.get_nearby_tiles():
+                            if not ct.is_in_vision(adj_pos):
+                                continue
+                            b_id_r = ct.get_tile_building_id(adj_pos)
+                            if b_id_r is None:
+                                continue
+                            if ct.get_team(b_id_r) != my_team:
+                                continue
+                            if ct.get_entity_type(b_id_r) not in NETWORK_TYPES:
+                                continue
+                            if ct.get_hp(b_id_r) < ct.get_max_hp(b_id_r):
+                                d = my_pos.distance_squared(adj_pos)
+                                if d < best_repair_dist:
+                                    best_repair_dist = d
+                                    best_repair_pos = adj_pos
+                        if best_repair_pos:
+                            if self.target != best_repair_pos:
+                                self.target = best_repair_pos
+                                self.path = []
+                        else:
+                            # Priorytet 4: Losowy cel wśród elementów sieci,
+                            # preferując kierunek z dala od strefy zagrożenia
+                            network_tiles = []
+                            for adj_pos in ct.get_nearby_tiles():
+                                b_id_r = ct.get_tile_building_id(adj_pos)
+                                if b_id_r and ct.get_team(b_id_r) == my_team and ct.get_entity_type(b_id_r) in NETWORK_TYPES:
+                                    # Unikaj kierunku zagrożenia
+                                    if danger_pos and adj_pos.distance_squared(danger_pos) < my_pos.distance_squared(danger_pos):
+                                        continue
+                                    network_tiles.append(adj_pos)
+                            if not network_tiles:
+                                # Jeśli wszystkie są bliżej zagrożenia — weź dowolne
+                                for adj_pos in ct.get_nearby_tiles():
+                                    b_id_r = ct.get_tile_building_id(adj_pos)
+                                    if b_id_r and ct.get_team(b_id_r) == my_team and ct.get_entity_type(b_id_r) in NETWORK_TYPES:
+                                        network_tiles.append(adj_pos)
+                            if network_tiles:
+                                if not self.target or self.target == my_pos:
+                                    self.target = random.choice(network_tiles)
+                                    self.path = []
+                            else:
+                                if not self.target or my_pos == self.target:
+                                    self.target = Position(
+                                        random.randint(0, map_width - 1),
+                                        random.randint(0, map_height - 1))
+                                    self.path = []
+
+            elif current_state == BotState.FORTIFIER:
+                # ==========================================
+                # FORTIFIER (BUNKER BUILDER): Obudowuje nasze Harvestery Barierami.
+                # ==========================================
+                harv_target = self.fortifier_harvest_target
+
+                # 1. KOTWICA: Jeśli jesteśmy w trakcie rurociągu produkcyjnego, trzymaj się złoża!
+                if self.assigned_ore is not None:
+                    self.fortifier_harvest_target = self.assigned_ore
+
+                harv_target = self.fortifier_harvest_target
+
+                # Znajdź nowy cel, jeśli go nie masz lub co 15 tur zrób re-skan
+                if not harv_target or (current_round % 15 == 0 and self.assigned_ore is None):
+                    best_h = None
+                    best_d = float('inf')
+
+                    for pos, (env, b_type, is_enemy) in self.vip_facts.items():
+                        if b_type != EntityType.HARVESTER or is_enemy:
+                            continue
+                        
+
+                        needs_barrier = False
+                        for d in ORTHOGONAL_DIRECTIONS:
+                            nb = pos.add(d)
+                            if not (0 <= nb.x < map_width and 0 <= nb.y < map_height):
+                                continue
+
+                            nb_env = ct.get_tile_env(nb) if ct.is_in_vision(nb) else self.memory.get(nb, Environment.EMPTY)
+                            if nb_env in HARD_OBSTACLES:
+                                continue
+
+                            nb_b_id = ct.get_tile_building_id(nb) if ct.is_in_vision(nb) else None
+                            if nb_b_id is None:
+                                needs_barrier = True
+                                break
+
+                            nb_bt = ct.get_entity_type(nb_b_id)
+                            nb_team = ct.get_team(nb_b_id)
+
+                            if nb_team == my_team and nb_bt in NETWORK:
+                                continue
+                            if nb_team == my_team and nb_bt == EntityType.BARRIER:
+                                continue
+                            if nb_team == my_team and nb_bt in {EntityType.MARKER, EntityType.ROAD}:
+                                needs_barrier = True
+                                break
+                            if nb_team == enemy_team and nb_bt in {EntityType.MARKER, EntityType.ROAD}:
+                                needs_barrier = True
+                                break
+
+                        if needs_barrier:
+                            d_val = my_pos.distance_squared(pos)
+                            if d_val < best_d:
+                                best_d = d_val
+                                best_h = pos
+
+                    self.fortifier_harvest_target = best_h
+                    harv_target = best_h
+
+                if harv_target:
+                    # Idziemy do Harvestera (albo do luki wokół niego)
+                    if not self.target or (self.target == harv_target and my_pos.distance_squared(harv_target) > 2):
+                        self.target = harv_target
+
+                    # ---> ZMIANA: Usunięty dystans do harv_target. Wystarczy, że jesteśmy w fazie akcji <---
+                    if ct.get_action_cooldown() == 0:
+                        built_barrier = False
+                        next_slot = None
+
+                        for d in ORTHOGONAL_DIRECTIONS:
+                            sn = harv_target.add(d)
+                            if not (0 <= sn.x < map_width and 0 <= sn.y < map_height): continue
+                            
+                            # ---> ZMIANA: Jeśli mgła wojny zasłania pole, wymuszamy podejście do niego <---
+                            if not ct.is_in_vision(sn):
+                                if next_slot is None:
+                                    next_slot = sn
+                                continue
+
+                            sn_env = ct.get_tile_env(sn)
+                            if sn_env in HARD_OBSTACLES: continue
+
+                            sn_b_id = ct.get_tile_building_id(sn)
+                            if sn_b_id is not None:
+                                sn_bt = ct.get_entity_type(sn_b_id)
+                                sn_team = ct.get_team(sn_b_id)
+
+                                if sn_team == my_team and sn_bt in NETWORK:
+                                    continue
+                                if sn_team == my_team and sn_bt == EntityType.BARRIER:
+                                    continue
+                                if sn_team == my_team and sn_bt not in {EntityType.MARKER, EntityType.ROAD}:
+                                    continue
+                                if sn_team == enemy_team and sn_bt not in {EntityType.MARKER, EntityType.ROAD}:
+                                    continue
+
+                                if ct.can_destroy(sn):
+                                    ct.destroy(sn)
+
+                            # Sprawdzamy dystans bezposrednio do LUKI, a nie do harvestera
+                            if my_pos.distance_squared(sn) <= 2:
+                                if self._can_afford_build(ct, 'barrier'):
+                                    if ct.can_build_barrier(sn):
+                                        ct.build_barrier(sn)
+                                        built_barrier = True
+                                        self.target = harv_target # Resetujemy cel, by sprawdzić kolejne boki
+                                        self.path = []
+                                        break
+                                else:
+                                    # Brak surowców - stój i czekaj
+                                    if next_slot is None:
+                                        next_slot = sn
+                                    break
+                            else:
+                                # Znaleźliśmy lukę, ale jest po drugiej stronie bazy. Zapisujemy ją.
+                                if next_slot is None:
+                                    next_slot = sn
+
+                        if not built_barrier:
+                            if next_slot is not None:
+                                self.target = next_slot
+                                self.path = []
+                            else:
+                                # ---> KONIEC MISJI: Wszystkie luki wypełnione betonem! <---
+                                self.bot_state = BotState.EXPLORE
+                                self.fortifier_harvest_target = None
+                                self.assigned_ore = None  # Puszczamy kotwicę! Bot jest znowu wolny.
+                                self.target = None
+
+                else:
+                    if not self.target or my_pos == self.target:
+                        self.target = Position(
+                            random.randint(0, map_width - 1),
+                            random.randint(0, map_height - 1))
+                        self.path = []
+
+
+
+            elif current_state == BotState.SMELTER:
+                # ==========================================
+                # SMELTER: buduje Foundry i podłącza do sieci
+                # ==========================================
+                phase = self.smelter_phase
+
+                if phase == 'scan':
+                    # Sprawdź czy Foundry już istnieje — fizycznie w zasięgu lub w vip_facts
+                    foundry_exists = False
+                    existing_foundry_pos = None
+                    for pos, (env, b_type, is_enemy) in self.vip_facts.items():
+                        if b_type == EntityType.FOUNDRY and not is_enemy:
+                            foundry_exists = True
+                            existing_foundry_pos = pos
+                            break
+                    # Sprawdź też bezpośrednio w zasięgu wzroku
+                    if not foundry_exists:
+                        for adj_pos in ct.get_nearby_tiles():
+                            b_id_f = ct.get_tile_building_id(adj_pos)
+                            if b_id_f and ct.get_team(b_id_f) == my_team and ct.get_entity_type(b_id_f) == EntityType.FOUNDRY:
+                                foundry_exists = True
+                                existing_foundry_pos = adj_pos
+                                break
+                    if foundry_exists:
+                        # Foundry już istnieje — podłącz się do niego zamiast budować nowe
+                        self.smelter_foundry_pos = existing_foundry_pos
+                        self.smelter_phase = 'connect'
+                        self.target = None
+                        self.path = []
+                    else:
+                        # Skanuj zasoby w sieci
+                        ti_src = None
+                        ax_src = None
+                        for adj_pos in ct.get_nearby_tiles():
+                            b_id_s = ct.get_tile_building_id(adj_pos)
+                            if b_id_s is None:
+                                continue
+                            if ct.get_team(b_id_s) != my_team:
+                                continue
+                            if ct.get_entity_type(b_id_s) not in NETWORK:
+                                continue
+                            try:
+                                res = ct.get_stored_resource(b_id_s)
+                            except Exception:
+                                continue
+                            if res == ResourceType.TITANIUM and ti_src is None:
+                                ti_src = adj_pos
+                            elif res == ResourceType.RAW_AXIONITE and ax_src is None:
+                                ax_src = adj_pos
+                        if ti_src:
+                            self.smelter_titanium_src = ti_src
+                        if ax_src:
+                            self.smelter_axionite_src = ax_src
+
+                        # Jeśli mamy obie rudy w zasięgu i jesteśmy blisko core — szukaj miejsca
+                        if self.smelter_titanium_src and self.smelter_axionite_src:
+                            self.smelter_phase = 'build'
+                        elif self.allied_core_tiles:
+                            # Idź do core żeby lepiej skanować
+                            core_center = list(self.allied_core_tiles)[len(self.allied_core_tiles)//2]
+                            if not self.target:
+                                self.target = core_center
+                                self.path = []
+                            elif my_pos.distance_squared(core_center) <= 9:
+                                # Przy core ale brak obu ruda — czekaj i skanuj
+                                pass
+
+                elif phase == 'build':
+                    # Znajdź optymalne miejsce na Foundry blisko core
+                    if not self.smelter_foundry_pos:
+                        ti_src = self.smelter_titanium_src
+                        ax_src = self.smelter_axionite_src
+                        best_fpos = None
+                        best_score = float('inf')
+                        if self.my_core_center:
+                            # Oblicz pola wejściowe splitterów — Foundry NIE może tam stanąć
+                            KNIGHT_OFFSETS_FP = [
+                                ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
+                                ( 2, 1, Direction.WEST),  ( 1, 2, Direction.NORTH),
+                                (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
+                                (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
+                            ]
+                            splitter_input_positions: set[Position] = set()
+                            for ddx, ddy, sp_faces in KNIGHT_OFFSETS_FP:
+                                sp = Position(self.my_core_cx + ddx, self.my_core_cy + ddy)
+                                splitter_input_positions.add(sp.add(sp_faces.opposite()))
+                            for dx in range(-5, 6):
+                                for dy in range(-5, 6):
+                                    fp = Position(self.my_core_cx + dx, self.my_core_cy + dy)
+                                    if not (0 <= fp.x < map_width and 0 <= fp.y < map_height):
+                                        continue
+                                    fp_env = self.memory.get(fp, Environment.EMPTY)
+                                    if fp_env in HARD_OBSTACLES:
+                                        continue
+                                    if fp in self.allied_core_tiles:
+                                        continue
+                                    # Nie stawiamy Foundry na polu wejściowym Splittera
+                                    if fp in splitter_input_positions:
+                                        continue
+                                    # Nie stawiamy Foundry na pozycji Splittera
+                                    if fp in self.allied_splitter_tiles:
+                                        continue
+                                    d_core = fp.distance_squared(Position(self.my_core_cx, self.my_core_cy))
+                                    d_ti = fp.distance_squared(ti_src) if ti_src else 999
+                                    d_ax = fp.distance_squared(ax_src) if ax_src else 999
+                                    score = d_core + d_ti + d_ax
+                                    if score < best_score:
+                                        best_score = score
+                                        best_fpos = fp
+                        self.smelter_foundry_pos = best_fpos
+
+                    fpos = self.smelter_foundry_pos
+                    if fpos:
+                        if self.target != fpos:
+                            self.target = fpos
+                            self.path = []
+                        if my_pos.distance_squared(fpos) <= 2 and ct.get_action_cooldown() == 0:
+                            # Niszczymy co stoi TYLKO jeśli stać nas na Foundry
+                            foundry_ti, foundry_ax = FOUNDRY_BASE_COST
+                            can_afford_foundry = (my_tit >= foundry_ti and my_ax >= foundry_ax)
+                            f_b_id = ct.get_tile_building_id(fpos) if ct.is_in_vision(fpos) else None
+                            if f_b_id is not None and can_afford_foundry and ct.can_destroy(fpos):
+                                ct.destroy(fpos)
+                            if ct.can_build_foundry(fpos):
+                                ct.build_foundry(fpos)
+                                self.smelter_phase = 'connect'
+                                self.target = None
+
+                elif phase == 'connect':
+                    fpos = self.smelter_foundry_pos
+                    if not fpos:
+                        self.bot_state = BotState.REPAIRMAN
+                    else:
+                        if not self.target or my_pos == self.target:
+                            self.target = fpos
+                            self.path = []
+                        if my_pos.distance_squared(fpos) <= 2 and ct.get_action_cooldown() == 0 and ct.is_in_vision(fpos):
+                            # Sprawdź podłączenia sąsiadów Foundry
+                            # Sąsiad jest podłączony jeśli:
+                            #   - sąsiad jest conveyorem/splitterem naszym wskazującym NA fpos, LUB
+                            #   - sąsiad jest mostem naszym z bridge_target == fpos
+                            connected_in = 0
+                            has_output = False
+                            for d in ORTHOGONAL_DIRECTIONS:
+                                nb = fpos.add(d)
+                                if not (0 <= nb.x < map_width and 0 <= nb.y < map_height): continue
+                                if not ct.is_in_vision(nb): continue
+                                nb_b = ct.get_tile_building_id(nb)
+                                if nb_b is None: continue
+                                if ct.get_team(nb_b) != my_team: continue
+                                nb_bt = ct.get_entity_type(nb_b)
+                                if nb_bt == EntityType.CONVEYOR:
+                                    try:
+                                        if nb.add(ct.get_direction(nb_b)) == fpos:
+                                            connected_in += 1
+                                    except Exception: pass
+                                elif nb_bt == EntityType.BRIDGE:
+                                    try:
+                                        if ct.get_bridge_target(nb_b) == fpos:
+                                            connected_in += 1
+                                    except Exception: pass
+                                elif nb_bt == EntityType.SPLITTER:
+                                    connected_in += 1  # splitter rozdziela, liczymy
+                                # Wyjście: conveyor z fpos wskazuje NA sąsiada
+                            # Sprawdź wyjście — conveyor zbudowany NA fpos (pole Foundry)
+                            # lub sąsiad który przyjmuje zasoby z fpos
+                            fpos_b = ct.get_tile_building_id(fpos)
+                            if fpos_b and ct.get_entity_type(fpos_b) == EntityType.FOUNDRY:
+                                has_output = True  # Foundry samo wychodzi na wszystkich sąsiadów
+
+                            if connected_in >= 2:
+                                # Mamy dwa wejścia — przechodzimy do fortyfikacji
+                                self.smelter_phase = 'fortify'
+                                self.target = None
+                            else:
+                                # Brakuje wejść — buduj most z wyjściem NA fpos
+                                # Szukamy elementu sieci z Ti lub Ax w zasięgu mostu (dist_sq <= 9 od fpos)
+                                ti_src = self.smelter_titanium_src
+                                ax_src = self.smelter_axionite_src
+                                for src_pos in [ti_src, ax_src]:
+                                    if src_pos is None: continue
+                                    # Sprawdź czy już jest połączony
+                                    already = False
+                                    for d in ORTHOGONAL_DIRECTIONS:
+                                        nb = fpos.add(d)
+                                        if not (0 <= nb.x < map_width and 0 <= nb.y < map_height): continue
+                                        if not ct.is_in_vision(nb): continue
+                                        nb_b = ct.get_tile_building_id(nb)
+                                        if nb_b and ct.get_team(nb_b) == my_team:
+                                            nb_bt = ct.get_entity_type(nb_b)
+                                            if nb_bt == EntityType.CONVEYOR:
+                                                try:
+                                                    if nb.add(ct.get_direction(nb_b)) == fpos:
+                                                        already = True; break
+                                                except Exception: pass
+                                            elif nb_bt == EntityType.BRIDGE:
+                                                try:
+                                                    if ct.get_bridge_target(nb_b) == fpos:
+                                                        already = True; break
+                                                except Exception: pass
+                                    if already: continue
+                                    # Buduj most z src_pos z target=fpos jeśli dist <= 9
+                                    if src_pos.distance_squared(fpos) <= 9:
+                                        if my_pos.distance_squared(src_pos) <= 2:
+                                            sb = ct.get_tile_building_id(src_pos)
+                                            if sb and ct.can_destroy(src_pos): ct.destroy(src_pos)
+                                            if ct.can_build_bridge(src_pos, fpos):
+                                                ct.build_bridge(src_pos, fpos)
+                                                break
+                                        else:
+                                            self.target = src_pos
+                                            self.path = []
+                                    else:
+                                        # Za daleko na most — buduj conveyor krok po kroku (uproszczone)
+                                        if my_pos.distance_squared(src_pos) <= 2:
+                                            d_to_fpos = src_pos.direction_to(fpos)
+                                            if ct.can_build_conveyor(src_pos, d_to_fpos):
+                                                ct.build_conveyor(src_pos, d_to_fpos)
+                                        else:
+                                            self.target = src_pos
+                                            self.path = []
+
+                elif phase == 'fortify':
+                    # Problem 6: ufortyfikuj Foundry Sentinelami z wolnych stron
+                    fpos = self.smelter_foundry_pos
+                    if not fpos:
+                        self.bot_state = BotState.REPAIRMAN
+                    else:
+                        if not self.target or my_pos == self.target:
+                            self.target = fpos
+                            self.path = []
+                        if my_pos.distance_squared(fpos) <= 2 and ct.get_action_cooldown() == 0 and ct.is_in_vision(fpos):
+                            map_center = Position(map_width // 2, map_height // 2)
+                            built = False
+                            next_fort_slot = None
+                            for d in ORTHOGONAL_DIRECTIONS:
+                                sn = fpos.add(d)
+                                if not (0 <= sn.x < map_width and 0 <= sn.y < map_height): continue
+                                if not ct.is_in_vision(sn): continue
+                                sn_env = ct.get_tile_env(sn)
+                                if sn_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]: continue
+                                sn_b = ct.get_tile_building_id(sn)
+                                if sn_b is not None:
+                                    sn_bt = ct.get_entity_type(sn_b)
+                                    sn_team = ct.get_team(sn_b)
+                                    if sn_bt == EntityType.SENTINEL and sn_team == my_team: continue
+                                    if sn_team == my_team and sn_bt in {EntityType.MARKER, EntityType.ROAD}:
+                                        if ct.can_destroy(sn): ct.destroy(sn)
+                                    else:
+                                        continue
+                                # Facing: od Foundry w kierunku środka mapy z tej strony
+                                facing_f = d
+                                if my_pos.distance_squared(sn) <= 2:
+                                    if ct.can_build_sentinel(sn, facing_f):
+                                        ct.build_sentinel(sn, facing_f)
+                                        self.target = fpos
+                                        self.path = []
+                                        built = True
+                                        break
+                                else:
+                                    if next_fort_slot is None:
+                                        next_fort_slot = sn
+                            if not built:
+                                if next_fort_slot:
+                                    self.target = next_fort_slot
+                                    self.path = []
+                                else:
+                                    # Foundry ufortyfikowane — zostań EXPLORE
+                                    self.bot_state = BotState.EXPLORE
+                                    self.target = None
+
+            elif current_state == BotState.EXPLORE:
+                found_ore_pos = None
+                found_belt_target = None
+                
+                if not self.target or current_round % 2 == 0:
+                    CLAIM_TTL = 20
+                    candidates_ore = {}
+                    candidates_belt = {}
+                    
+                    # 1. Szukamy w VIP Facts (Rudy i Harvestery)
+                    for pos, (env, b_type, is_enemy) in self.vip_facts.items():
+                        claim_turn = self.claimed_ores.get(pos, -1)
+                        if claim_turn >= 0 and (current_round - claim_turn) < CLAIM_TTL:
+                            continue
+                        
+                        dist = my_pos.distance_squared(pos)
+                        
+                        # Pusta ruda
+                        TARGET_ORES = {Environment.ORE_TITANIUM} if current_round <= 100 else ORES
+                        
+                        if env in TARGET_ORES and b_type is None:
+                            candidates_ore[pos] = dist
+                        
+                        # Harvester (nasz lub wrogi) bez podłączonej naszej sieci
+                        elif b_type == EntityType.HARVESTER:
+                            has_our_network = False
+                            for d in ORTHOGONAL_DIRECTIONS:
+                                nb = pos.add(d)
+                                if not (0 <= nb.x < map_width and 0 <= nb.y < map_height): continue
+                                nb_b_info = self.buildings.get(nb)
+                                # Używamy NETWORK (same taśmy, mosty, splittery), żeby nie liczyć innych budynków
+                                if nb_b_info and nb_b_info[0] in NETWORK and nb_b_info[1] == my_team:
+                                    has_our_network = True
+                                    break
+                            if not has_our_network:
+                                candidates_belt[pos] = dist
+
+                    # 2. Szukamy ślepych końców Conveyorów/Mostów w całej pamięci
+                    for pos, (b_type, b_team, b_meta, _) in self.buildings.items():
+                        if b_type in {EntityType.CONVEYOR,EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE}:
+                            out_pos = None
+                            if b_type in {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR} and isinstance(b_meta, Direction):
+                                out_pos = pos.add(b_meta)
+                            elif b_type == EntityType.BRIDGE and isinstance(b_meta, Position):
+                                out_pos = b_meta
+                            
+                            if out_pos and (0 <= out_pos.x < map_width and 0 <= out_pos.y < map_height):
+                                claim_turn = self.claimed_ores.get(out_pos, -1)
+                                if claim_turn >= 0 and (current_round - claim_turn) < CLAIM_TTL:
+                                    continue
+                                    
+                                out_env = self.memory.get(out_pos, Environment.EMPTY)
+                                if out_env not in HARD_OBSTACLES:
+                                    out_b_info = self.buildings.get(out_pos)
+                                    # Jeśli wyjście taśmy jest puste (lub ma tylko marker/drogę) -> Ślepy Koniec!
+                                    if not out_b_info or out_b_info[0] in {None, EntityType.MARKER, EntityType.ROAD}:
+                                        dist = my_pos.distance_squared(out_pos)
+                                        candidates_belt[out_pos] = dist
+
+                    # Wybieramy najlepszego kandydata w obu kategoriach
+                    found_ore_pos = min(candidates_ore, key=candidates_ore.get) if candidates_ore else None
+                    found_belt_target = min(candidates_belt, key=candidates_belt.get) if candidates_belt else None
+
+                    # Jeśli mamy obu kandydatów, wybieramy tego, który jest fizycznie bliżej
+                    if found_ore_pos and found_belt_target:
+                        if candidates_ore[found_ore_pos] <= candidates_belt[found_belt_target]:
+                            found_belt_target = None  # Ruda jest bliżej, kasujemy wpięcie
+                        else:
+                            found_ore_pos = None      # Wpięcie jest bliżej, kasujemy rudę
+
+                # Wykonanie decyzji pozostaje bez zmian
+                if found_ore_pos is not None:
+                    self.bot_state = BotState.BUILD_MINE
+                    self.target = found_ore_pos
+                    self.path = []
+                    self.assigned_ore = found_ore_pos
+                    self.bot_mine_since = current_round
+                    
+                elif found_belt_target is not None:
+                    # Przerywamy EXPLORE i od razu odpalamy maszynę budującą pas!
+                    self.bot_state = BotState.BUILD_BELT
+                    self.last_bridge_node = found_belt_target
+                    self.target = found_belt_target
+                    self.path = []
+                    self.belt_chain = set()
+                    self.belt_stuck_counter = 0
+                    self.assigned_ore = found_belt_target
+
+                # Jeśli nadal eksploruje i nie ma celu (lub dotarł do celu), losuje nowy (Fala Sonaru).
+                if self.bot_state == BotState.EXPLORE:
+                    if not self.target or (
+                            my_pos == self.target
+                            and self.target not in self.allied_core_tiles):
+                        # --- FALA SONARU (ROSNĄCE OKRĘGI WOKÓŁ BAZY) ---
+                        
+                        # Promień rośnie wraz z upływem gry. 
+                        current_radius = 6 + (current_round // 6)
+                        
+                        # Losujemy kąt
+                        angle = random.uniform(0, 2 * math.pi)
+                        
+                        # Wyliczamy nową pozycję na obwodzie
+                        target_x = int(self.my_core_cx + current_radius * math.cos(angle))
+                        target_y = int(self.my_core_cy + current_radius * math.sin(angle))
+                        
+                        # Docinamy do granic mapy
+                        target_x = max(0, min(map_width - 1, target_x))
+                        target_y = max(0, min(map_height - 1, target_y))
+                        
+                        self.target = Position(target_x, target_y)
+                        self.path = []
+
+            elif current_state == BotState.BUILD_MINE:
+                target_pos = self.target
+
+                # 0. ZABEZPIECZENIE: Jeśli zgubiliśmy cel
+                if not target_pos:
+                    self.bot_state = BotState.EXPLORE
+                    self.path = []
+                    self.assigned_ore = None
+                else:
+                    at_ore = my_pos.distance_squared(target_pos) <= 2
+
+                    # 0b. TIMEOUT: jeśli nie dotarliśmy do złoża przez 60 tur — porzucamy
+                    if not at_ore and (current_round - self.bot_mine_since) >= 60:
+                        self.bot_state = BotState.EXPLORE
+                        self.target = None
+                        self.path = []
+                        self.assigned_ore = None
+
+                    # 1. SANITY CHECK: Czy ktoś nas ubiegł budynkiem?
+                    else:
+                        b_type_chk, b_team_chk, _, _ = self.buildings.get(target_pos, (None, None, None, -1))
+                        # Droga WROGA na złożu → nie możemy zbudować harvestera, porzuć
+                        enemy_road_on_ore = (b_type_chk == EntityType.ROAD and b_team_chk == enemy_team)
+                        # Inny budynek (nie marker, nie nasza droga, nie nasza bariera) → pole zajęte
+                        alien_building = (b_type_chk is not None
+                                          and b_type_chk not in (EntityType.MARKER, EntityType.ROAD, EntityType.BARRIER))
+                        if enemy_road_on_ore or alien_building:
+                            self.bot_state = BotState.EXPLORE
+                            self.target = None
+                            self.path = []
+                            self.assigned_ore = None
+
+                        # 1b. SANITY CHECK: Inna jednostka zarezerwowała/czeka — ale TYLKO gdy
+                        # jeszcze nie dotarliśmy do złoża (gdy already at_ore mamy pierwszeństwo)
+                        elif not at_ore and self._ore_already_claimed_by_other(ct, my_id, my_team, target_pos, current_round):
+                            self.bot_state = BotState.EXPLORE
+                            self.target = None
+                            self.path = []
+                            self.assigned_ore = None
+
+                        # 2. Jesteśmy przy rudzie? BUDUJEMY!
+                        elif at_ore:
+                            if ct.get_action_cooldown() == 0:
+                                # Sprawdź czy stać nas na harvester (zanim zniszczymy przeszkodę)
+                                can_afford_harv = my_tit >= HARVESTER_BASE_COST[0]
+
+                                # Jeśli na złożu stoi nasza droga, marker lub bariera — zniszcz ją TYLKO gdy stać nas na harvestera.
+                                b_on_ore = ct.get_tile_building_id(target_pos) if ct.is_in_vision(target_pos) else None
+                                if (b_on_ore is not None
+                                        and ct.get_entity_type(b_on_ore) in {EntityType.ROAD, EntityType.MARKER, EntityType.BARRIER}
+                                        and ct.get_team(b_on_ore) == my_team
+                                        and can_afford_harv
+                                        and ct.can_destroy(target_pos)):
+                                    ct.destroy(target_pos)
+                                    
+                                if ct.can_build_harvester(target_pos):
+                                    ct.build_harvester(target_pos)
+
+                                    if target_pos in self.vip_facts:
+                                        env = self.vip_facts[target_pos][0]
+                                        self.vip_facts[target_pos] = (env, EntityType.HARVESTER, False)
+
+                                    self.bot_state = BotState.BUILD_BELT
+                                    self.last_bridge_node = target_pos
+                                    self.target = target_pos
+                                    self.belt_chain = set()
+                                    self.belt_stuck_counter = 0
+                                else:
+                                    # Cooldown == 0 ale brak surowców —
+                                    # budujemy drogę na złożu (blokada dla przeciwnika)
+                                    # i ogłaszamy rezerwację na SĄSIEDNIM polu (nie na złożu, bo tam droga)
+                                    ore_b_id = ct.get_tile_building_id(target_pos)
+                                    if ore_b_id is not None and ct.can_destroy(target_pos):
+                                        ore_bt = ct.get_entity_type(ore_b_id)
+                                        if ore_bt == EntityType.MARKER:
+                                            ct.destroy(target_pos)  # usuń marker żeby zbudować drogę
+                                    if ct.can_build_road(target_pos):
+                                        ct.build_road(target_pos)
+                                    # Marker rezerwacji na sąsiednim polu (złoże już zajęte drogą)
+                                    self._place_claim_marker_near_ore(ct, my_id, my_team, target_pos, current_round, forbidden_tiles={my_pos, target_pos})
+                            else:
+                                # Czekamy na cooldown — ogłaszamy rezerwację i budujemy drogę (jeśli możliwe)
+                                # destroy i build_road nie wymagają cooldownu akcji
+                                ore_b_id2 = ct.get_tile_building_id(target_pos)
+                                if ore_b_id2 is not None:
+                                    ore_bt2 = ct.get_entity_type(ore_b_id2)
+                                    if ore_bt2 == EntityType.MARKER and ct.can_destroy(target_pos):
+                                        ct.destroy(target_pos)
+                                if ct.can_build_road(target_pos):
+                                    ct.build_road(target_pos)
+                                self._place_claim_marker_near_ore(ct, my_id, my_team, target_pos, current_round, forbidden_tiles={my_pos, target_pos})
+                                self.path = []
+            
+            elif current_state == BotState.BUILD_BELT:
+                last_node = self.last_bridge_node
+
+                if not last_node:
+                    self.bot_state = BotState.EXPLORE
+                    self.target = None
+                    self.assigned_ore = None
+                elif not self.allied_core_tiles:
+                    # Nie wiemy gdzie jest Core — idź go znajdź
+                    self.bot_state = BotState.EXPLORE
+                    self.target = None
+                    self.path = []
+                    # Zabezpieczenie przed błędem zmiennych — kończymy logikę w tej turze!
+                    return
+                else:
+                    # --- PRIORYTET: pending_splitter ---
+                    pending = self.pending_splitter
+                    if pending is not None:
+                        pend_pos, pend_dir = pending
+                        b_id_pend = ct.get_tile_building_id(pend_pos) if ct.is_in_vision(pend_pos) else None
+                        splitter_there = (b_id_pend is not None and ct.get_entity_type(b_id_pend) == EntityType.SPLITTER)
+                        if splitter_there:
+                            self.pending_splitter = None
+                        elif ct.get_action_cooldown() == 0 and my_pos.distance_squared(pend_pos) <= 2:
+                            if ct.can_destroy(pend_pos):
+                                ct.destroy(pend_pos)
+                            if ct.can_build_splitter(pend_pos, pend_dir):
+                                ct.build_splitter(pend_pos, pend_dir)
+                                self.allied_splitter_tiles.add(pend_pos)
+                                self.pending_splitter = None
+                        else:
+                            if self.target != pend_pos:
+                                self.target = pend_pos
+                                self.path = []
+
+                    delivery_tiles = self.allied_splitter_tiles
+
+                    core_xs = [p.x for p in self.allied_core_tiles]
+                    core_ys = [p.y for p in self.allied_core_tiles]
+                    core_cx = (min(core_xs) + max(core_xs)) // 2
+                    core_cy = (min(core_ys) + max(core_ys)) // 2
+                    core_center = Position(core_cx, core_cy)
+
+                    KNIGHT_OFFSETS_DELIVERY = [
+                        ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
+                        ( 2, 1, Direction.WEST),  ( 1, 2, Direction.NORTH),
+                        (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
+                        (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
+                    ]
+                    for ddx, ddy, _ in KNIGHT_OFFSETS_DELIVERY:
+                        sp_candidate = Position(core_cx + ddx, core_cy + ddy)
+                        if not (0 <= sp_candidate.x < map_width and 0 <= sp_candidate.y < map_height):
+                            continue
+                        sp_env = self.memory.get(
+                            sp_candidate,
+                            ct.get_tile_env(sp_candidate) if ct.is_in_vision(sp_candidate) else Environment.EMPTY)
+                        if sp_env in HARD_OBSTACLES:
+                            continue
+                        self.allied_splitter_tiles.add(sp_candidate)
+
+                    current_belt_chain = self.belt_chain
+
+                    last_node_env = self.memory.get(
+                        last_node,
+                        ct.get_tile_env(last_node) if ct.is_in_vision(last_node) else Environment.EMPTY
+                    )
+                    last_node_is_ore = last_node_env in ORES
+
+                    if last_node_is_ore:
+                        source_candidates = [
+                            last_node.add(d) for d in ORTHOGONAL_DIRECTIONS
+                            if (lambda p: 0 <= p.x < map_width and 0 <= p.y < map_height)(last_node.add(d))
+                        ]
+                    else:
+                        last_node_blocked = False
+                        if ct.is_in_vision(last_node):
+                            b_id_ln_check = ct.get_tile_building_id(last_node)
+                            if b_id_ln_check is not None:
+                                bt_ln = ct.get_entity_type(b_id_ln_check)
+                                if bt_ln not in (EntityType.MARKER, EntityType.ROAD):
+                                    last_node_blocked = True
+                        if last_node_blocked:
+                            source_candidates = [
+                                last_node.add(d) for d in ORTHOGONAL_DIRECTIONS
+                                if (lambda p: 0 <= p.x < map_width and 0 <= p.y < map_height)(last_node.add(d))
+                            ]
+                        else:
+                            source_candidates = [last_node]
+
+                    near_core_tiles = set()
+                    # 1. Zastrzegamy pola bezpośrednio wokół Core (pod Sentinele i Splittery)
+                    for ct_ in self.allied_core_tiles:
+                        for dx in range(-1, 2):
+                            for dy in range(-1, 2):
+                                near_core_tiles.add(Position(ct_.x + dx, ct_.y + dy))
+                    near_core_tiles |= self.allied_core_tiles
+
+                    # ---> 2. REZERWACJA MIEJSCA POD LAUNCHERY <---
+                    # Dodajemy przewidywane pozycje wyrzutni do puli "zakazanych" dla taśmociągów
+                    if self.my_core_center:
+                        launcher_reserved_offsets = [
+                            ( 0, -3), ( 3, -3), ( 3,  0), ( 3,  3),
+                            ( 0,  3), (-3,  3), (-3,  0), (-3, -3)
+                        ]
+                        for dx, dy in launcher_reserved_offsets:
+                            near_core_tiles.add(Position(self.my_core_cx + dx, self.my_core_cy + dy))
+
+                    splitter_input_map = {}
+                    for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
+                        sp = Position(core_cx + ddx, core_cy + ddy)
+                        if sp in self.allied_splitter_tiles:
+                            splitter_input_map[sp] = sp.add(sp_faces.opposite())
+
+                    def tile_is_buildable(pos):
+                        if not (0 <= pos.x < map_width and 0 <= pos.y < map_height):
+                            return False
+                        env = self.memory.get(
+                            pos, ct.get_tile_env(pos) if ct.is_in_vision(pos) else Environment.EMPTY)
+                        if env in HARD_OBSTACLES:
+                            return False
+                        if ct.is_in_vision(pos):
+                            b_id_t = ct.get_tile_building_id(pos)
+                            if b_id_t is not None:
+                                b_type_t = ct.get_entity_type(b_id_t)
+                                b_team_t = ct.get_team(b_id_t)
+                                if b_type_t == EntityType.MARKER:
+                                    return True
+                                if b_type_t == EntityType.ROAD and b_team_t == my_team:
+                                    return True
+                                # Uznajemy wrogi budynek (inny niż rdzeń) za cel do staranowania!
+                                if b_team_t == enemy_team and b_type_t != EntityType.CORE:
+                                    return True
+                                return False
+                        return True
+
+                    def is_existing_network(pos):
+                        if pos in current_belt_chain:
+                            return False
+                        mem = self.buildings.get(pos)
+                        if mem is not None:
+                            mt, mteam, _, _ = mem
+                            if mteam == my_team and mt in NETWORK:
+                                return True
+                        return False
+
+                    build_pos = None
+                    build_target = None
+                    build_mode = None
+                    build_is_network = False
+                    best_score = float('inf')
+
+                    # =========================================================
+                    # NOWOŚĆ: UZBRAJANIE SPLITTERA BAZOWEGO PRZED ZAKOŃCZENIEM MISJI
+                    # =========================================================
+                    sentinel_task = None
+                    launcher_task = None
+                    is_at_base = (last_node in delivery_tiles)
+
+                    if is_at_base and ct.is_in_vision(last_node):
+                        b_id_ln_sp = ct.get_tile_building_id(last_node)
+                        
+                        # Sprawdzamy czy Splitter na pewno stoi
+                        splitter_exists = False
+                        if b_id_ln_sp is not None and ct.get_team(b_id_ln_sp) == my_team and ct.get_entity_type(b_id_ln_sp) == EntityType.SPLITTER:
+                            splitter_exists = True
+                            
+                        if splitter_exists:
+                            sentinels_needed = []
+                            launchers_needed = []
+                            
+                            if self.my_core_center:
+                                core_cx, core_cy = self.my_core_center.x, self.my_core_center.y
+                                
+                                global_sentinel_offsets = [
+                                    ( 0, -2, Direction.NORTH),   # N
+                                    ( 2, -2, Direction.NORTHEAST),# NE
+                                    ( 2,  0, Direction.EAST),     # E
+                                    ( 2,  2, Direction.SOUTHEAST),# SE
+                                    ( 0,  2, Direction.SOUTH),    # S
+                                    (-2,  2, Direction.SOUTHWEST),# SW
+                                    (-2,  0, Direction.WEST),     # W
+                                    (-2, -2, Direction.NORTHWEST),# NW
+                                ]
+
+                                global_launcher_offsets = [
+                                    ( 0, -3, Direction.NORTH),     # przed Sentinelem N
+                                    ( 3, -3, Direction.NORTHEAST), # przed Sentinelem NE
+                                    ( 3,  0, Direction.EAST),      # przed Sentinelem E
+                                    ( 3,  3, Direction.SOUTHEAST), # przed Sentinelem SE
+                                    ( 0,  3, Direction.SOUTH),     # przed Sentinelem S
+                                    (-3,  3, Direction.SOUTHWEST), # przed Sentinelem SW
+                                    (-3,  0, Direction.WEST),      # przed Sentinelem W
+                                    (-3, -3, Direction.NORTHWEST), # przed Sentinelem NW
+                                ]
+
+                                # 1. Sprawdzamy braki w Sentinelach
+                                for ddx, ddy, facing in global_sentinel_offsets:
+                                    sn_pos = Position(core_cx + ddx, core_cy + ddy)
+                                    if last_node.distance_squared(sn_pos) <= 2:
+                                        if not (0 <= sn_pos.x < map_width and 0 <= sn_pos.y < map_height): continue
+                                        sn_env = self.memory.get(sn_pos, ct.get_tile_env(sn_pos) if ct.is_in_vision(sn_pos) else Environment.EMPTY)
+                                        if sn_env in HARD_OBSTACLES: continue
+                                        
+                                        need_build = True
+                                        if ct.is_in_vision(sn_pos):
+                                            sn_b_id = ct.get_tile_building_id(sn_pos)
+                                            if sn_b_id is not None:
+                                                sn_type = ct.get_entity_type(sn_b_id)
+                                                sn_team = ct.get_team(sn_b_id)
+                                                if sn_team == my_team and sn_type == EntityType.SENTINEL:
+                                                    need_build = False 
+                                                elif sn_team == my_team and sn_type not in {EntityType.MARKER, EntityType.ROAD}:
+                                                    need_build = False 
+                                        if need_build:
+                                            sentinels_needed.append((sn_pos, facing))
+
+                                # 2. Sprawdzamy braki w Launcherach 
+                                for ddx, ddy, facing in global_launcher_offsets:
+                                    ln_pos = Position(core_cx + ddx, core_cy + ddy)
+                                    if last_node.distance_squared(ln_pos) <= 5:
+                                        if not (0 <= ln_pos.x < map_width and 0 <= ln_pos.y < map_height): continue
+                                        ln_env = self.memory.get(ln_pos, ct.get_tile_env(ln_pos) if ct.is_in_vision(ln_pos) else Environment.EMPTY)
+                                        if ln_env in HARD_OBSTACLES: continue
+                                        
+                                        need_build = True
+                                        if ct.is_in_vision(ln_pos):
+                                            ln_b_id = ct.get_tile_building_id(ln_pos)
+                                            if ln_b_id is not None:
+                                                ln_type = ct.get_entity_type(ln_b_id)
+                                                ln_team = ct.get_team(ln_b_id)
+                                                if ln_team == my_team and ln_type == EntityType.LAUNCHER:
+                                                    need_build = False 
+                                                elif ln_team == my_team and ln_type not in {EntityType.MARKER, EntityType.ROAD}:
+                                                    need_build = False 
+                                        if need_build:
+                                            launchers_needed.append((ln_pos, facing))
+                                            
+                            if sentinels_needed:
+                                sentinel_task = sentinels_needed[0] 
+                            elif launchers_needed:
+                                launcher_task = launchers_needed[0]
+
+                        # Zabezpieczenie: jeśli jesteśmy w delivery_tiles, a Splittera NIE MA, musimy go postawić!
+                        else:
+                            if self.pending_splitter is None:
+                                for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
+                                    if last_node == Position(core_cx + ddx, core_cy + ddy):
+                                        self.pending_splitter = (last_node, sp_faces)
+                                        break
+
+                    # Wyłączamy poszukiwanie tras taśmociągów, jeśli mamy zadanie zbrojeniowe!
+                    if sentinel_task is not None:
+                        build_pos = sentinel_task[0]
+                        build_target = sentinel_task[1]
+                        build_mode = 'sentinel'
+                        build_is_network = False
+                        source_candidates = []  
+                    elif launcher_task is not None:
+                        build_pos = launcher_task[0]
+                        build_target = launcher_task[1]
+                        build_mode = 'launcher'
+                        build_is_network = False
+                        source_candidates = []
+
+                    # =========================================================
+                    # KROK 4: Sprawdź czy misja zakończona.
+                    # =========================================================
+                    mission_done = False
+                    if is_at_base:
+                        # W bazie kończymy misję TYLKO gdy Splitter stoi i obu zadań na obronę nie ma
+                        if self.pending_splitter is None and sentinel_task is None and launcher_task is None:
+                            if ct.is_in_vision(last_node):
+                                b_id_ln = ct.get_tile_building_id(last_node)
+                                if b_id_ln is not None and ct.get_team(b_id_ln) == my_team and ct.get_entity_type(b_id_ln) == EntityType.SPLITTER:
+                                    mission_done = True
+                    else:
+                        # Wpinamy się w zwykłą sieć - kończymy jeśli podłączono
+                        if is_existing_network(last_node):
+                            mission_done = True
+
+                    if mission_done:
+                        # Płynne przejście do obudowywania
+                        self.bot_state = BotState.FORTIFIER
+                        self.fortifier_harvest_target = self.assigned_ore
+                        
+                        # CZYŚCIMY TYLKO ZMIENNE ZWIĄZANE Z TAŚMOCIĄGIEM!
+                        # Zostawiamy self.assigned_ore nienaruszone, by bot pamiętał swój cel!
+                        self.target = None
+                        self.path = []
+                        self.belt_chain = set()
+                        self.pending_splitter = None
+
+
+                    for source in source_candidates:
+                        if not (0 <= source.x < map_width and 0 <= source.y < map_height):
+                            continue
+                        src_env = self.memory.get(
+                            source, ct.get_tile_env(source) if ct.is_in_vision(source) else Environment.EMPTY)
+                        if src_env in HARD_OBSTACLES:
+                            continue
+
+                        src_dist = source.distance_squared(core_center)
+                        source_buildable = tile_is_buildable(source)
+
+                        # ---- CONVEYOR ----
+                        if source_buildable and source not in near_core_tiles:
+                            for d in ORTHOGONAL_DIRECTIONS:
+                                cand = source.add(d)
+                                if not (0 <= cand.x < map_width and 0 <= cand.y < map_height):
+                                    continue
+                                if cand in current_belt_chain:
+                                    continue
+
+                                cand_dist = cand.distance_squared(core_center)
+
+                                # Przypadek A: cand to Splitter
+                                if cand in self.allied_splitter_tiles:
+                                    required_input = splitter_input_map.get(cand)
+                                    if required_input is None or source != required_input:
+                                        continue  # zła strona Splittera
+                                    splitter_fed = False
+                                    if ct.is_in_vision(cand):
+                                        for d_feed in ORTHOGONAL_DIRECTIONS:
+                                            feed_pos = cand.add(d_feed)
+                                            if not (0 <= feed_pos.x < map_width and 0 <= feed_pos.y < map_height):
+                                                continue
+                                            if not ct.is_in_vision(feed_pos):
+                                                continue
+                                            b_id_feed = ct.get_tile_building_id(feed_pos)
+                                            if b_id_feed is None:
+                                                continue
+                                            if ct.get_team(b_id_feed) != my_team:
+                                                continue
+                                            ft = ct.get_entity_type(b_id_feed)
+                                            if ft == EntityType.CONVEYOR:
+                                                try:
+                                                    if feed_pos.add(ct.get_direction(b_id_feed)) == cand:
+                                                        splitter_fed = True
+                                                        break
+                                                except Exception:
+                                                    pass
+                                            elif ft == EntityType.BRIDGE:
+                                                try:
+                                                    if ct.get_bridge_target(b_id_feed) == cand:
+                                                        splitter_fed = True
+                                                        break
+                                                except Exception:
+                                                    pass
+                                    score = 2 if splitter_fed else 0
+                                    if score < best_score:
+                                        best_score = score
+                                        build_pos = source
+                                        build_target = d
+                                        build_mode = 'conveyor'
+                                        build_is_network = True
+
+                                # Przypadek B: Wpięcie w istniejącą sieć
+                                elif cand not in self.allied_core_tiles and is_existing_network(cand):
+                                    if not (cand_dist < src_dist):  
+                                        continue
+                                    is_clogged = False
+                                    try:
+                                        b_id_cand = ct.get_tile_building_id(cand)
+                                        cand_type = ct.get_entity_type(b_id_cand)
+                                        if cand_type == EntityType.CONVEYOR and ct.get_stored_resource(b_id_cand) is not None:
+                                            cand_dir = ct.get_direction(b_id_cand)
+                                            next_pos = cand.add(cand_dir)
+                                            if ct.is_in_vision(next_pos):
+                                                b_id_next = ct.get_tile_building_id(next_pos)
+                                                if b_id_next and ct.get_stored_resource(b_id_next) is not None:
+                                                    is_clogged = True
+                                    except Exception:
+                                        pass
+
+                                    if is_clogged:
+                                        continue 
+
+                                    score = 150 + cand_dist
+                                    if score < best_score:
+                                        best_score = score
+                                        build_pos = source
+                                        build_target = d
+                                        build_mode = 'conveyor'
+                                        build_is_network = True
+
+                                # Przypadek D: wolne pole
+                                elif (cand not in near_core_tiles
+                                        and tile_is_buildable(cand)
+                                        and cand_dist < src_dist):
+                                    score = 200 + cand_dist
+                                    if score < best_score:
+                                        best_score = score
+                                        build_pos = source
+                                        build_target = d
+                                        build_mode = 'conveyor'
+                                        build_is_network = False
+
+
+                        # ---- MOST ----
+                        if source_buildable:
+                            if ct.is_in_vision(source):
+                                b_id_src = ct.get_tile_building_id(source)
+                                if b_id_src is not None:
+                                    bt_src = ct.get_entity_type(b_id_src)
+                                    tm_src = ct.get_team(b_id_src)
+                                    replaceable = (bt_src == EntityType.MARKER or
+                                                   (bt_src == EntityType.ROAD and tm_src == my_team))
+                                    if not replaceable:
+                                        continue  
+
+                            for dx in range(-3, 4):
+                                for dy in range(-3, 4):
+                                    end_pos = Position(source.x + dx, source.y + dy)
+                                    if not (0 <= end_pos.x < map_width and 0 <= end_pos.y < map_height):
+                                        continue
+                                    d2 = source.distance_squared(end_pos)
+                                    if d2 == 0 or d2 > 9:
+                                        continue
+                                    if end_pos in current_belt_chain:
+                                        continue
+                                    end_dist = end_pos.distance_squared(core_center)
+
+                                    if end_pos in self.allied_core_tiles:
+                                        pass  
+
+                                    elif end_pos in self.allied_splitter_tiles:
+                                        splitter_fed_b = False
+                                        if ct.is_in_vision(end_pos):
+                                            for d_feed in ORTHOGONAL_DIRECTIONS:
+                                                feed_pos = end_pos.add(d_feed)
+                                                if not (0 <= feed_pos.x < map_width and 0 <= feed_pos.y < map_height):
+                                                    continue
+                                                if not ct.is_in_vision(feed_pos):
+                                                    continue
+                                                b_id_feed = ct.get_tile_building_id(feed_pos)
+                                                if b_id_feed is None:
+                                                    continue
+                                                if ct.get_team(b_id_feed) != my_team:
+                                                    continue
+                                                ft = ct.get_entity_type(b_id_feed)
+                                                if ft == EntityType.CONVEYOR:
+                                                    try:
+                                                        if feed_pos.add(ct.get_direction(b_id_feed)) == end_pos:
+                                                            splitter_fed_b = True
+                                                            break
+                                                    except Exception:
+                                                        pass
+                                                elif ft == EntityType.BRIDGE:
+                                                    try:
+                                                        if ct.get_bridge_target(b_id_feed) == end_pos:
+                                                            splitter_fed_b = True
+                                                            break
+                                                    except Exception:
+                                                        pass
+                                        score = 202 if splitter_fed_b else 200
+                                        if score < best_score:
+                                            best_score = score
+                                            build_pos = source
+                                            build_target = end_pos
+                                            build_mode = 'bridge'
+                                            build_is_network = True
+
+                                    elif is_existing_network(end_pos):
+                                        if end_dist >= src_dist:
+                                            continue
+                                        if end_pos in near_core_tiles:
+                                            continue
+                                            
+                                        is_clogged = False
+                                        try:
+                                            b_id_end = ct.get_tile_building_id(end_pos)
+                                            end_type = ct.get_entity_type(b_id_end)
+                                            if end_type == EntityType.CONVEYOR and ct.get_stored_resource(b_id_end) is not None:
+                                                end_dir = ct.get_direction(b_id_end)
+                                                next_pos = end_pos.add(end_dir)
+                                                if ct.is_in_vision(next_pos):
+                                                    b_id_next = ct.get_tile_building_id(next_pos)
+                                                    if b_id_next and ct.get_stored_resource(b_id_next) is not None:
+                                                        is_clogged = True
+                                        except Exception:
+                                            pass
+                                            
+                                        if is_clogged:
+                                            continue 
+                                            
+                                        score = 250 + end_dist
+                                        if score < best_score:
+                                            best_score = score
+                                            build_pos = source
+                                            build_target = end_pos
+                                            build_mode = 'bridge'
+                                            build_is_network = True
+
+                                    elif (end_pos not in near_core_tiles
+                                            and tile_is_buildable(end_pos)
+                                            and end_dist < src_dist):
+                                        score = 300 + end_dist
+                                        if score < best_score:
+                                            best_score = score
+                                            build_pos = source
+                                            build_target = end_pos
+                                            build_mode = 'bridge'
+                                            build_is_network = False
+
+                    # =========================================================
+                    # FAZA WYKONANIA
+                    # =========================================================
+                    if self.bot_state == BotState.BUILD_BELT:
+
+                        # --- TRYB SENTINEL: gdy stuck >= 20, ignoruj build_pos ---
+                        if self.belt_stuck_counter >= 20:
+                            if not self._can_afford_build(ct, 'sentinel'):
+                                if self.target != last_node:
+                                    self.target = last_node
+                                    self.path = []
+                            else:
+                                ready = (ct.get_action_cooldown() == 0
+                                         and ct.is_in_vision(last_node)
+                                         and my_pos.distance_squared(last_node) <= 2)
+                                if not ready:
+                                    self.belt_stuck_counter = 20
+                                    if self.target != last_node:
+                                        self.target = last_node
+                                        self.path = []
+                                else:
+                                    map_center = Position(map_width // 2, map_height // 2)
+                                    dx = map_center.x - last_node.x
+                                    dy = map_center.y - last_node.y
+                                    best_sentinel_dir = None
+                                    best_dot = float('-inf')
+                                    for cand_dir in DIRECTIONS:
+                                        # POPRAWKA BŁĘDU: Używamy DIR_DELTAS zamiast .delta() !
+                                        ddx, ddy = DIR_DELTAS[cand_dir]
+                                        dot = dx * ddx + dy * ddy
+                                        if dot > best_dot:
+                                            best_dot = dot
+                                            best_sentinel_dir = cand_dir
+                                    sentinel_dir = best_sentinel_dir or Direction.NORTH
+                                    for d_check in ORTHOGONAL_DIRECTIONS:
+                                        neighbor = last_node.add(d_check)
+                                        if not (0 <= neighbor.x < map_width and 0 <= neighbor.y < map_height):
+                                            continue
+                                        if not ct.is_in_vision(neighbor):
+                                            continue
+                                        b_id_nb = ct.get_tile_building_id(neighbor)
+                                        if b_id_nb is None:
+                                            continue
+                                        if ct.get_team(b_id_nb) == my_team and ct.get_entity_type(b_id_nb) == EntityType.CONVEYOR:
+                                            try:
+                                                conv_out_dir = ct.get_direction(b_id_nb)
+                                                if neighbor.add(conv_out_dir) == last_node and sentinel_dir == d_check:
+                                                    sentinel_dir = sentinel_dir.rotate_right()
+                                            except Exception:
+                                                pass
+                                    if self.can_replace_with(last_node, 3, my_team, ct) and ct.can_destroy(last_node):
+                                        ct.destroy(last_node)
+                                    if ct.can_build_sentinel(last_node, sentinel_dir):
+                                        ct.build_sentinel(last_node, sentinel_dir)
+                                    self.bot_state = BotState.EXPLORE
+                                    self.target = None
+                                    self.path = []
+                                    self.belt_chain = set()
+                                    self.belt_stuck_counter = 0
+                                    self.assigned_ore = None
+
+                        elif build_pos is not None and build_target is not None:
+
+                            # 1. Sprawdzamy czy na polach, których potrzebujemy, nie ma wroga
+                            enemy_to_destroy = None
+                            # Dla mostu musimy upewnić się, że miejsce zrzutu (build_target) też jest czyste!
+                            tiles_to_check = [build_pos]
+                            if isinstance(build_target, Position):
+                                tiles_to_check.append(build_target)
+                                
+                            for check_p in tiles_to_check:
+                                if ct.is_in_vision(check_p):
+                                    bid = ct.get_tile_building_id(check_p)
+                                    if bid is not None and ct.get_team(bid) == enemy_team and ct.get_entity_type(bid) != EntityType.MARKER:
+                                        enemy_to_destroy = check_p
+                                        break
+                                        
+                            if enemy_to_destroy is not None:
+                                if my_pos == enemy_to_destroy:
+                                    if ct.get_action_cooldown() == 0 and ct.can_fire(enemy_to_destroy):
+                                        ct.fire(enemy_to_destroy) # Autodestrukcja na wrogiej drodze!
+                                else:
+                                    if self.target != enemy_to_destroy:
+                                        self.target = enemy_to_destroy
+                                        self.path = []
+
+                            elif my_pos == build_pos:
+                                # Ewakuacja z miejsca budowy, bo stoimy tam, gdzie chcemy postawić obiekt
+                                if build_mode in ['conveyor', 'sentinel', 'launcher']:
+                                    away_pos = build_pos.add(build_target)
+                                else:
+                                    away_pos = build_target
+                                for try_dir in sorted(DIRECTIONS, key=lambda d: my_pos.add(d).distance_squared(away_pos)):
+                                    if ct.can_move(try_dir):
+                                        ct.move(try_dir)
+                                        self.path = []
+                                        break
+                                self.target = build_pos
+
+                            elif my_pos.distance_squared(build_pos) <= 2:
+                                # Normalny proces destrukcji NASZYCH dróg i budowy nowej sieci
+                                if self.can_replace_with(build_pos, 3, my_team, ct) and ct.can_destroy(build_pos):
+                                    ct.destroy(build_pos)
+
+                                if ct.get_action_cooldown() == 0:
+                                    built = False
+                                    if build_mode == 'conveyor':
+                                        if ct.can_build_conveyor(build_pos, build_target):
+                                            ct.build_conveyor(build_pos, build_target)
+                                            built = True
+                                    elif build_mode == 'bridge':
+                                        if ct.can_build_bridge(build_pos, build_target):
+                                            ct.build_bridge(build_pos, build_target)
+                                            built = True
+                                    elif build_mode == 'sentinel':
+                                        if ct.can_build_sentinel(build_pos, build_target):
+                                            ct.build_sentinel(build_pos, build_target)
+                                            built = True
+                                    elif build_mode == 'launcher':
+                                        if ct.can_build_launcher(build_pos):
+                                            ct.build_launcher(build_pos)
+                                            built = True
+
+                                    if built:
+                                        self.belt_stuck_counter = 0  
+                                        if build_mode in ('sentinel', 'launcher'):
+                                            self.target = last_node
+                                            self.path = []
+                                        elif build_mode == 'conveyor':
+                                            conv_output = build_pos.add(build_target)
+                                            self.last_bridge_node = conv_output
+                                            self.belt_chain.add(build_pos)
+                                            if conv_output in self.allied_splitter_tiles:
+                                                b_id_sp_cv = ct.get_tile_building_id(conv_output) if ct.is_in_vision(conv_output) else None
+                                                splitter_there_cv = (b_id_sp_cv is not None and ct.get_entity_type(b_id_sp_cv) == EntityType.SPLITTER)
+                                                if not splitter_there_cv and self.pending_splitter is None:
+                                                    for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
+                                                        if conv_output == Position(core_cx + ddx, core_cy + ddy):
+                                                            self.pending_splitter = (conv_output, sp_faces)
+                                                            break
+                                            self.target = self.last_bridge_node
+                                            self.path = []
+
+                                        else:  # bridge
+                                            self.last_bridge_node = build_target
+                                            self.belt_chain.add(build_pos)
+                                            self.belt_chain.add(build_target)
+                                            if build_target in self.allied_splitter_tiles:
+                                                b_id_end = ct.get_tile_building_id(build_target) if ct.is_in_vision(build_target) else None
+                                                splitter_there = (b_id_end is not None and ct.get_entity_type(b_id_end) == EntityType.SPLITTER)
+                                                if not splitter_there:
+                                                    for ddx, ddy, faces in KNIGHT_OFFSETS_DELIVERY:
+                                                        if build_target == Position(core_cx + ddx, core_cy + ddy):
+                                                            self.pending_splitter = (build_target, faces)
+                                                            break
+                                            self.target = self.last_bridge_node
+                                            self.path = []
+                                    else:
+                                        if not self._can_afford_build(ct, build_mode):
+                                            self.target = build_pos
+                                            self.path = []
+                                        else:
+                                            self.target = None
+                                            self.path = []
+                                else:
+                                    self.target = build_pos
+
+                            else:
+                                if self.target != build_pos:
+                                    self.target = build_pos
+                                    self.path = []
+
+                        else:
+                            waiting_for_resources = (
+                                not self._can_afford_build(ct, 'conveyor')
+                                and not self._can_afford_build(ct, 'bridge')
+                            )
+                            if not waiting_for_resources:
+                                self.belt_stuck_counter = self.belt_stuck_counter + 1
+
+                            wait_target = last_node
+                            if last_node_is_ore:
+                                for d_wait in ORTHOGONAL_DIRECTIONS:
+                                    wp = last_node.add(d_wait)
+                                    if not (0 <= wp.x < map_width and 0 <= wp.y < map_height):
+                                        continue
+                                    wp_env = self.memory.get(wp, ct.get_tile_env(wp) if ct.is_in_vision(wp) else Environment.EMPTY)
+                                    if wp_env not in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE, Environment.WALL]:
+                                        wait_target = wp
+                                        break
+                            if self.target != wait_target:
+                                self.target = wait_target
+                                self.path = []
+
+
+            elif current_state == BotState.BUILD_BUNKER:
+                # ==========================================
+                # BUILD_BUNKER: Tworzy ufortyfikowaną placówkę na środku mapy
+                # ==========================================
+                if current_round >= 100:
+                    self.bot_state = BotState.EXPLORE
+                    self.target = None
+                    self.path = []  
+
+                if self.assigned_ore is None:
+                    if not self.target:
+                        self.target = Position(map_width // 2, map_height // 2)
+                        self.path = []
+                
+                    if my_pos.distance_squared(self.target) <= 3:
+                        found_ore = self.find_nearest_vip_target(my_pos, self.vip_facts, [Environment.ORE_TITANIUM])
+                        if found_ore:
+                            self.assigned_ore = found_ore
+                            self.target = found_ore
+                            self.path = []
+                        else:
+                            self.bot_state = BotState.EXPLORE
+                            self.target = None
+                            self.path = []
+                            self.assigned_ore = None
+                        
+
+                # Krok 2: Obsługa złoża i budowa Harvestera (bezpieczny zakres)
+                elif self.assigned_ore is not None:
+                    ore_pos = self.assigned_ore
+                    
+                    harvester_built = False
+                    if ct.is_in_vision(ore_pos):
+                        ore_b_id = ct.get_tile_building_id(ore_pos)
+                        harvester_built = (ore_b_id is not None and ct.get_entity_type(ore_b_id) == EntityType.HARVESTER)
+                        
+                        if not harvester_built:
+                            if self.target != ore_pos:
+                                self.target = ore_pos
+                            if my_pos.distance_squared(ore_pos) <= 2:
+                                if ct.get_action_cooldown() == 0:
+                                    if ore_b_id is not None and ct.can_destroy(ore_pos):
+                                        ct.destroy(ore_pos)
+                                    elif self._can_afford_build(ct, 'harvester') and ct.can_build_harvester(ore_pos):
+                                        ct.build_harvester(ore_pos)
+                                        self.vip_facts[ore_pos] = (Environment.ORE_TITANIUM, EntityType.HARVESTER, False)
+                            
+                        else:
+                            # Krok 3: Obudowa Sentinelami z weryfikacją granic (out_of_bounds)
+                            missing_sentinels = []
+                            for d in ORTHOGONAL_DIRECTIONS:
+                                sn_pos = ore_pos.add(d)
+                                env_sn = self.memory.get(sn_pos, ct.get_tile_env(sn_pos) if ct.is_in_vision(sn_pos) else Environment.EMPTY)
+                                                                    
+                                if not ct.is_in_vision(sn_pos):
+                                    missing_sentinels.append((sn_pos, d))
+                                    continue
+                                    
+                                sn_b_id = ct.get_tile_building_id(sn_pos)
+                                if sn_b_id is not None:
+                                    bt = ct.get_entity_type(sn_b_id)
+                                    tm = ct.get_team(sn_b_id)
+                                    if bt == EntityType.SENTINEL and tm == my_team:
+                                        continue 
+                                    elif bt not in [EntityType.MARKER, EntityType.ROAD]:
+                                        continue 
+                                        
+                                missing_sentinels.append((sn_pos, d))
+                                
+                            if not missing_sentinels:
+                                # Sukces! Placówka zbudowana
+                                self.bot_state = BotState.EXPLORE
+                                self.target = None
+                                self.path = []
+                                self.assigned_ore = None
+                            else:
+                                # Budujemy brakujące sentinele
+                                sn_target, sn_dir = missing_sentinels[0]
+                                if self.target != sn_target:
+                                    self.target = sn_target
+                                    self.path = []
+
+                                dist = my_pos.distance_squared(sn_target)
+                                if dist <= 2:
+                                    if ct.get_action_cooldown() == 0:
+                                        b_id_to_destroy = ct.get_tile_building_id(sn_target)
+                                        if b_id_to_destroy is not None and ct.can_destroy(sn_target):
+                                            ct.destroy(sn_target)
+                                        elif self._can_afford_build(ct, 'sentinel') and ct.can_build_sentinel(sn_target, sn_dir):
+                                            ct.build_sentinel(sn_target, sn_dir)
+            
+            elif current_state == BotState.HARRAS:
+                # ==========================================
+                # HARRAS: Analizuje mapę. Jeśli znajdzie cel pod sabotaż -> zmienia stan na SABOTEUR.
+                # Jeśli nie -> szuka wrogiej infrastruktury, wchodzi i niszczy.
+                # ==========================================
+                is_action_taken = False
+
+                # 1. Atak na cel, jeśli na nim stoimy
+                if self.target and my_pos == self.target:
+                    b_type, b_team, _, _ = self.buildings.get(my_pos, (None, None, None, -1))
+                    
+                    if b_type is not None and b_team == enemy_team:
+                        if ct.get_action_cooldown() == 0 and ct.can_fire(my_pos):
+                            ct.fire(my_pos)
+
+                            # ---> KLUCZOWA ZMIANA: Po zniszczeniu przełączamy się od razu na budowę! <---
+                            if ct.get_tile_building_id(my_pos) is None:
+                                self.bot_state = BotState.SABOTEUR
+                                # self.target zostaje bez zmian (to pole, na którym właśnie stoimy i które oczyściliśmy)
+                        
+                        is_action_taken = True
+
+                if not is_action_taken and ct.get_action_cooldown() == 0:
+                    
+                    # Sprawdzamy, czy nasz dotychczasowy cel nadal istnieje jako obiekt wroga
+                    target_invalid = True
+                    if self.target:
+                        t_type, t_team, _, _ = self.buildings.get(self.target, (None, None, None, -1))
+                        if t_team == enemy_team and (t_type in NETWORK or t_type == EntityType.ROAD):
+                            target_invalid = False
+
+                    # Dzięki temu bot nie tańczy za uciekającym surowcem
+                    early_turn = (current_round <= 100) and (current_round % 5 == 0)
+                    if not self.target or my_pos == self.target or target_invalid or early_turn:
+                        nowy_cel = None
+                        zmieniono_stan = False
+
+                        if self.enemy_core_center:
+                            # --- PRIORYTET 0: MOSTY I SIECI WROGA ZASILAJĄCE BAZĘ ---
+                            best_kabel_score = float('inf')
+                            najgrozniejszy_kabel = None
+                            
+                            cx, cy = self.enemy_core_center.x, self.enemy_core_center.y
+                            
+                            for dx in range(-4, 5):
+                                for dy in range(-4, 5):
+                                    if abs(dx) <= 1 and abs(dy) <= 1: 
+                                        continue
+                                        
+                                    check_pos = Position(cx + dx, cy + dy)
+                                    if not (0 <= check_pos.x < map_width and 0 <= check_pos.y < map_height):
+                                        continue
+                                        
+                                    b_info = self.buildings.get(check_pos)
+                                    if b_info is None:
+                                        continue
+                                        
+                                    b_type_chk, b_team_chk, b_meta_chk, _ = b_info
+                                    
+                                    if b_team_chk == enemy_team and (b_type_chk in NETWORK or b_type_chk == EntityType.ROAD):
+                                        is_feeding_core = False
+                                        
+                                        if b_type_chk == EntityType.BRIDGE and isinstance(b_meta_chk, Position):
+                                            if abs(b_meta_chk.x - cx) <= 1 and abs(b_meta_chk.y - cy) <= 1:
+                                                is_feeding_core = True
+                                                
+                                        elif abs(dx) <= 2 and abs(dy) <= 2:
+                                            if b_type_chk == EntityType.CONVEYOR and isinstance(b_meta_chk, Direction):
+                                                out_pos = check_pos.add(b_meta_chk)
+                                                if abs(out_pos.x - cx) <= 1 and abs(out_pos.y - cy) <= 1:
+                                                    is_feeding_core = True
+                                            else:
+                                                is_feeding_core = True
+                                                
+                                        if is_feeding_core:
+                                            score = my_pos.distance_squared(check_pos)
+                                            if b_type_chk == EntityType.BRIDGE:
+                                                score -= 10000
+                                            else:
+                                                score -= 5000
+                                                
+                                            # ---> FUNKCJA KOSZTU: PREMIA ZA SUROWCE <---
+                                            if ct.is_in_vision(check_pos):
+                                                b_id_target = ct.get_tile_building_id(check_pos)
+                                                if b_id_target is not None:
+                                                    try:
+                                                        if ct.get_stored_resource(b_id_target) is not None:
+                                                            score -= 2000
+                                                    except Exception:
+                                                        pass
+                                                
+                                            if score < best_kabel_score:
+                                                best_kabel_score = score
+                                                najgrozniejszy_kabel = check_pos
+
+                            if najgrozniejszy_kabel:
+                                nowy_cel = najgrozniejszy_kabel
+                                
+                            # --- PRIORYTET 1: OBUDOWYWANIE PUSTYCH PÓL MUREM ---
+                            if not nowy_cel:
+                                puste_przy_bazie = None
+                                for dx in range(-2, 3):
+                                    for dy in range(-2, 3):
+                                        if abs(dx) <= 1 and abs(dy) <= 1: 
+                                            continue
+                                        adj = Position(cx + dx, cy + dy)
+                                        if not (0 <= adj.x < map_width and 0 <= adj.y < map_height): continue
+                                        
+                                        if self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
+                                            b_info = self.buildings.get(adj)
+                                            is_removable = not b_info or b_info[0] in {None, EntityType.MARKER} or (b_info[0] == EntityType.ROAD and b_info[1] == my_team)
+                                            
+                                            if is_removable:
+                                                if puste_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(puste_przy_bazie):
+                                                    puste_przy_bazie = adj
+                                                    
+                                if puste_przy_bazie:
+                                    self.bot_state = BotState.SABOTEUR
+                                    self.target = puste_przy_bazie
+                                    self.sabotage_dir = None
+                                    self.path = []
+                                    zmieniono_stan = True
+
+                        # --- PRIORYTET 2: ŚLEPE KOŃCE ---
+                        if not nowy_cel and not zmieniono_stan:
+                            best_de_score = float('inf')
+                            best_de_pos = None
+                            
+                            for pos, (b_type, b_team, b_meta, _) in self.buildings.items():
+                                if b_team == enemy_team and b_type in {EntityType.CONVEYOR, EntityType.BRIDGE}:
+                                    out_pos = None
+                                    if b_type == EntityType.CONVEYOR and isinstance(b_meta, Direction):
+                                        out_pos = pos.add(b_meta)
+                                    elif b_type == EntityType.BRIDGE and isinstance(b_meta, Position):
+                                        out_pos = b_meta
+                                        
+                                    if out_pos and (0 <= out_pos.x < map_width and 0 <= out_pos.y < map_height):
+                                        out_env = self.memory.get(out_pos, Environment.EMPTY)
+                                        if out_env not in HARD_OBSTACLES:
+                                            out_b_info = self.buildings.get(out_pos)
+                                            if not out_b_info or out_b_info[0] in {None, EntityType.MARKER, EntityType.ROAD}:
+                                                score = my_pos.distance_squared(out_pos)
+                                                if score < best_de_score:
+                                                    best_de_score = score
+                                                    best_de_pos = out_pos
+                                                    
+                            if best_de_pos:
+                                self.bot_state = BotState.SABOTEUR
+                                self.target = best_de_pos
+                                self.sabotage_dir = self._get_8way_dir_to(best_de_pos, self.enemy_core_center) if self.enemy_core_center else None
+                                self.path = []
+                                zmieniono_stan = True
+
+                        # --- PRIORYTET 3: Niszczenie infrastruktury z dala od bazy + PREMIA ZA SUROWCE ---
+                        if not nowy_cel and not zmieniono_stan:
+                            best_score = float('inf')
+                            for pos, (b_type, b_team, _, _) in self.buildings.items():
+                                if b_team == enemy_team and (b_type in NETWORK or b_type == EntityType.ROAD):
+                                    dist_to_bot = my_pos.distance_squared(pos)
+                                    dist_to_enemy_core = pos.distance_squared(self.enemy_core_center) if self.enemy_core_center else 0
+                                    
+                                    score = dist_to_bot + (dist_to_enemy_core * 10)
+                                    
+                                    # ---> FUNKCJA KOSZTU: PREMIA ZA SUROWCE <---
+                                    if ct.is_in_vision(pos):
+                                        b_id_target = ct.get_tile_building_id(pos)
+                                        if b_id_target is not None:
+                                            try:
+                                                if ct.get_stored_resource(b_id_target) is not None:
+                                                    score -= 2000
+                                            except Exception:
+                                                pass
+                                    
+                                    if score < best_score:
+                                        best_score = score
+                                        nowy_cel = pos
+
+                        # --- PRIORYTET 4: GŁĘBOKI ZWIAD (Nie znamy jeszcze bazy) ---
+                        if not nowy_cel and not zmieniono_stan:
+                            best_score = float('-inf') # Tutaj szukamy MAX dystansu!
+                            my_core_pos = self.my_core_center or Position(map_width//2, map_height//2)
+                            
+                            for pos, (b_type, b_team, _, _) in self.buildings.items():
+                                if b_team == enemy_team and b_type in NETWORK:
+                                    # Szukamy kabla NAJDALEJ od nas i NAJDALEJ od naszego core
+                                    dist_from_core = pos.distance_squared(my_core_pos)
+                                    dist_from_me = my_pos.distance_squared(pos)
+                                    score = dist_from_core + dist_from_me
+                                    if score > best_score:
+                                        best_score = score
+                                        nowy_cel = pos
+                                        
+                        # --- PRIORYTET 3: ZWIAD STRATEGICZNY (Szukanie bazy w symetriach i rogach) ---
+                        if not nowy_cel and not zmieniono_stan:
+                            punkty_zwiadu = []
+                            
+                            # 1. Główna estymacja (najprawdopodobniej symetria punktowa)
+                            if self.enemy_core_center:
+                                punkty_zwiadu.append(self.enemy_core_center)
+                                
+                            # 2. Alternatywne symetrie (Odbicie lustrzane X oraz Y)
+                            if self.my_core_center:
+                                mx, my = self.my_core_center.x, self.my_core_center.y
+                                punkty_zwiadu.append(Position(map_width - 1 - mx, map_height - 1 - my))
+                                punkty_zwiadu.append(Position(mx, map_height - 1 - my)) # Odbicie pionowe
+                                punkty_zwiadu.append(Position(map_width - 1 - mx, my))  # Odbicie poziome
+                            
+                            # 3. Klasyczne rogi mapy (Gdyby map-maker zaszalał i zrezygnował z symetrii)
+                            # Odsuwamy się od ścian (np. o 1/6 mapy), żeby widzieć więcej przestrzeni
+                            marg_x, marg_y = map_width // 6, map_height // 6
+                            punkty_zwiadu.extend([
+                                Position(marg_x, marg_y), 
+                                Position(map_width - 1 - marg_x, map_height - 1 - marg_y),
+                                Position(map_width - 1 - marg_x, marg_y), 
+                                Position(marg_x, map_height - 1 - marg_y)
+                            ])
+                            
+                            # Szukamy pierwszego punktu, którego jeszcze nie sprawdziliśmy
+                            for punkt in punkty_zwiadu:
+                                # Upewniamy się, że punkt w pamięci nie jest litą skałą
+                                if self.memory.get(punkt, Environment.EMPTY) in HARD_OBSTACLES:
+                                    continue
+                                
+                                # Jeśli jesteśmy dalej niż 6 kratek (dystans^2 = 36), idziemy tam!
+                                # Jeśli jesteśmy bliżej, a kod dotarł aż tutaj (czyli nie znalazł bazy w PRIO 1),
+                                # to znaczy, że bazy tu nie ma i w pętli sprawdzamy kolejny punkt.
+                                if my_pos.distance_squared(punkt) > 36:
+                                    nowy_cel = punkt
+                                    break
+                                    
+                            # Zabezpieczenie awaryjne - jeśli bot obiegł wszystkie punkty i nic nie znalazł
+                            if not nowy_cel:
+                                rx = random.randint(0, map_width - 1)
+                                ry = random.randint(0, map_height - 1)
+                                nowy_cel = Position(rx, ry)
+                        
+                        if nowy_cel and not zmieniono_stan:
+                            self.target = nowy_cel
+                            self.path = []
+
+            elif current_state == BotState.SABOTEUR:
+                # ==========================================
+                # SABOTEUR: Podchodzi NA KROK (is_building=True), niszczy markery i stawia mury/gunnery.
+                # Po wykonaniu roboty wraca do stanu HARRAS.
+                # ==========================================
+                if not self.target:
+                    self.bot_state = BotState.HARRAS
+                elif my_pos == self.target:
+                    pass
+
+                elif my_pos.distance_squared(self.target) <= 2 and ct.get_action_cooldown() == 0:
+                    tp = self.target
+
+                    # ---> NOWE ZABEZPIECZENIE: ZDERZENIE Z RZECZYWISTOŚCIĄ (ŚCIANA/RUDA) <---
+                    # Jesteśmy blisko, więc na pewno widzimy cel. Przebijamy "mgłę wojny"!
+                    if ct.is_in_vision(tp):
+                        rzeczywisty_teren = ct.get_tile_env(tp)
+                        if rzeczywisty_teren in HARD_OBSTACLES:
+                            # Okazało się, że to ściana!
+                            # 1. Zapisujemy w pamięci, żeby Harras już nigdy tego nie wybrał
+                            self.memory[tp] = rzeczywisty_teren
+                            # 2. Porzucamy ten głupi pomysł i wracamy szukać nowego celu
+                            self.bot_state = BotState.HARRAS
+                            self.target = None
+                            self.path = []
+                            return  # Kończymy turę
+                        
+                    tp_type, tp_team, _, _ = self.buildings.get(tp, (None, None, None, -1))
+                    
+
+                    # Zabezpieczenie: jeśli cel jest już zajęty przez budynek. 
+                    if tp_type is not None:
+                        # SYTUACJA 1: Nasza własna droga
+                        if tp_type == EntityType.ROAD and tp_team == my_team:
+                            if ct.can_destroy(tp):
+                                ct.destroy(tp)
+                            # Czekamy na kolejną turę, aż pole będzie puste!
+                            
+                        # SYTUACJA 2: Jakiś wrogi budynek (droga, taśmociąg itp.) - z wyjątkiem Markera!
+                        elif tp_type is not None and tp_type != EntityType.MARKER and tp_team == enemy_team:
+                            # Sabotażysta nie umie uderzać z odległości. Wracamy do Harras, żeby go staranować!
+                            self.bot_state = BotState.HARRAS
+                            self.target = tp
+                            self.path = []
+                            
+                        # SYTUACJA 3: Nasz własny ważny budynek
+                        elif tp_type is not None and tp_type != EntityType.MARKER and tp_team == my_team:
+                            self.bot_state = BotState.HARRAS
+                            self.target = None
+                            self.path = []
+                            
+                    # SYTUACJA 4: Pole PUSTE lub jest na nim tylko MARKER (nadpisujemy markery z marszu!)
+                    if tp_type is None or tp_type == EntityType.MARKER:
+                        # Szukamy, czy na to pole wskazuje jakiś wrogi taśmociąg lub most
+                        pointing_enemy_dir = None
+                        for d in ORTHOGONAL_DIRECTIONS:
+                            adj_feed = tp.add(d)
+                            if not (0 <= adj_feed.x < map_width and 0 <= adj_feed.y < map_height):
+                                continue
+                            if ct.is_in_vision(adj_feed):
+                                adj_b_id = ct.get_tile_building_id(adj_feed)
+                                if adj_b_id is not None and ct.get_team(adj_b_id) == enemy_team:
+                                    adj_type = ct.get_entity_type(adj_b_id)
+                                    if adj_type == EntityType.CONVEYOR:
+                                        try:
+                                            if adj_feed.add(ct.get_direction(adj_b_id)) == tp:
+                                                pointing_enemy_dir = d.opposite()
+                                                break
+                                        except Exception: pass
+                                    elif adj_type == EntityType.BRIDGE:
+                                        try:
+                                            if ct.get_bridge_target(adj_b_id) == tp:
+                                                pointing_enemy_dir = d.opposite()
+                                                break
+                                        except Exception: pass
+                        
+                        if pointing_enemy_dir is not None:
+                            # Ślepy koniec znaleziony -> Stawiamy Gunnera
+                            if self._can_afford_build(ct, 'gunner') and ct.can_build_gunner(tp, pointing_enemy_dir):
+                                ct.build_gunner(tp, pointing_enemy_dir)
+                                self.bot_state = BotState.HARRAS
+                                self.target = None
+                                self.path = []
+                        else: 
+                            # Puste pole -> Budujemy Mur (Barierę)
+                            if self._can_afford_build(ct, 'barrier') and ct.can_build_barrier(tp):
+                                ct.build_barrier(tp)
+                                self.bot_state = BotState.HARRAS
+                                self.target = None
+                                self.path = []
+
+
+
+
+
+            # ==========================================
+            # 3. RUCH (NOGI) - Wykonuje się tylko, gdy mamy gdzie iść
+            # ==========================================
+            target_env = self.memory.get(self.target)
+            
+            # BEZPIECZNIK - ŚCIANA
+            if target_env == Environment.WALL:
+                self.target = None
+                self.path = []
+
+            future_pos = my_pos
+            target_pos = self.target
+
+            # Wizualizacja
+            if target_pos:
+                try:
+                    ct.draw_indicator_dot(target_pos, 255, 255, 0) # type: ignore
+                    ct.draw_indicator_line(my_pos, target_pos, 0, 200, 255) # type: ignore
+                except Exception:
+                    pass
+
+            # BEZPIECZNIK: jeśli cel nie zmienił się przez 60 tur, resetuj go.
+            # Działa tylko w stanach nie-budujących.
+            if target_pos is not None and self.bot_state in WANDERING_STATES:
+                if self.target_last != target_pos:
+                    # Nowy cel — zapamiętaj turę ustawienia
+                    self.target_last = target_pos
+                    self.target_since = current_round
+                elif current_round - self.target_since >= 60:
+                    # Ten sam cel przez 60 tur — reset
+                    self.target = None
+                    self.path = []
+                    self.target_last = None
+                    self.target_since = current_round
+                    target_pos = None
+
+            # Czy bot idzie budować? (zatrzymuje się krok przed celem, nie wchodzi na nie)
+            is_building = (self.bot_state in BUILDING_STATES)
+
+            # ---> NOWOŚĆ: Zdejmujemy hamulec (pozwalamy wejść NA POLE), jeśli chcemy staranować wroga! <---
+            if is_building and target_pos and ct.is_in_vision(target_pos):
+                t_b_id = ct.get_tile_building_id(target_pos)
+                if t_b_id is not None and ct.get_team(t_b_id) == enemy_team and ct.get_entity_type(t_b_id) != EntityType.MARKER:
+                    is_building = False
+
+            
+            if target_pos:
+                # =======================================================
+                # UNIWERSALNY ODBLOKOWYWACZ (Ewakuacja z placu budowy)
+                # Jeśli bot ma zbudować coś na polu, na którym właśnie stoi - musi zrobić krok w bok!
+                # =======================================================
+                if is_building and my_pos == target_pos:
+                    for try_dir in DIRECTIONS:
+                        if ct.can_move(try_dir):
+                            ct.move(try_dir)
+                            future_pos = my_pos.add(try_dir)
+                            self.path = []
+                            break
+                # HAMULEC: Zatrzymujemy się krok przed celem TYLKO, gdy idziemy budować.
+                if my_pos != target_pos and (not is_building or my_pos.distance_squared(target_pos) > 2):
+                    
+                    for _ in range(2): 
+                        if not self.path: 
+                            # KROK 1: Próba Zachłanna
+                            greedy_dir = my_pos.direction_to(target_pos)
+                            greedy_pos = my_pos.add(greedy_dir)
+                            
+                            out_of_bounds = not (0 <= greedy_pos.x < map_width and 0 <= greedy_pos.y < map_height)
+                            
+                            if out_of_bounds:
+                                is_hard_obstacle = True
+                            else:
+                                env = ct.get_tile_env(greedy_pos)
+                                memory_env = self.memory.get(greedy_pos)
+                                b_id = ct.get_tile_building_id(greedy_pos)
+                                b_type = ct.get_entity_type(b_id) if b_id is not None else None
+                                can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
+                                is_allied_core = (b_type == EntityType.CORE and ct.get_team(b_id) == my_team)
+
+                                # Twarda przeszkoda to: Ściana/Ruda ALBO budynek, który NIE JEST markerem i po którym nie da się chodzić
+                                is_hard_obstacle = (memory_env in HARD_OBSTACLES or (env in HARD_OBSTACLES and memory_env is None) or 
+                                                (b_id is not None and b_type not in passable_types and not can_walk_on_enemy and not is_allied_core))
+                            
+                            if not is_hard_obstacle and not out_of_bounds:
+                                self.path = [greedy_dir]
+                            else:
+                                # KROK 2: Uderzenie w przeszkodę -> KAŻDY używa A*, żeby ładnie omijać ściany
+                                self.path = self.calculate_astar_path(
+                                    ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
+                                    stop_adjacent=is_building 
+                                ) or [] 
+
+                                if not self.path:
+                                    # A* nie znalazł drogi. Sprawdzamy czy to wina budynków, czy twardego terenu!
+                                    terrain_path = self.calculate_astar_path(
+                                        ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
+                                        stop_adjacent=is_building, ignore_buildings=True
+                                    ) or []
+
+                                    if not terrain_path:
+                                        # Teren jest fizycznie odcięty przez mury/rudę! (Wrzucamy na Blacklistę)
+                                        self.unreachable_targets[target_pos] = current_round
+                                    
+                                    # W obu przypadkach (mur czy budynek) chwilowo nie możemy przejść, więc resetujemy cel
+                                    self.target = None
+                                    
+                                    if self.bot_state in {BotState.BUILD_MINE, BotState.BUILD_BELT}:
+                                        self.bot_state = BotState.EXPLORE
+                                        self.assigned_ore = None
+                                        self.pending_splitter = None
+                                    elif self.bot_state == BotState.SABOTEUR:
+                                        self.bot_state = BotState.HARRAS
+                                        self.assigned_ore = None
+                                        self.pending_splitter = None
+                                        
+                                    break # Kończymy turę ruchu
+                    
+                        # FAZA WYKONANIA
+                        if self.path:
+                            next_dir = self.path[0]
+                            next_pos = my_pos.add(next_dir)
+
+                            # 1. Próbujemy iść optymalnie
+                            if ct.can_move(next_dir):
+                                ct.move(next_dir)
+                                future_pos = next_pos
+                                self.path.pop(0) 
+                                break # Ruch wykonany, wyskakujemy z pętli range(2)
+
+                            # 2. Nie możemy iść optymalnie bez budowania? Próbujemy zbudować drogę
+                            elif ct.can_build_road(next_pos):
+                                if ct.get_action_cooldown() == 0:
+                                    ct.build_road(next_pos)
+                                    if ct.can_move(next_dir):
+                                        ct.move(next_dir)
+                                        future_pos = next_pos
+                                        self.path.pop(0)
+                                break # Zbudowaliśmy drogę (lub czekamy na cooldown), koniec akcji w tej turze
+
+                            # 3. Nie możemy iść optymalnie i nie możemy zbudować drogi - sprawdzamy, co nas blokuje
+                            else:
+                                # PYTAMY WPROST: Czy na tym polu fizycznie stoi jakiś bot?
+                                if not (0 <= next_pos.x < map_width and 0 <= next_pos.y < map_height):
+                                    self.path = []
+                                    break
+                                blocking_bot_id = ct.get_tile_builder_bot_id(next_pos)
+                                
+                                if blocking_bot_id is not None:
+                                    # Blokuje nas ruchoma jednostka (Miękka przeszkoda)
+                                    # Odpalamy unik (Reaktywne omijanie)
+                                    alt_directions = sorted(DIRECTIONS, key=lambda d: my_pos.add(d).distance_squared(target_pos))
+                                    
+                                    for alt_dir in alt_directions:
+                                        if alt_dir != next_dir and ct.can_move(alt_dir):
+                                            ct.move(alt_dir)
+                                            future_pos = my_pos.add(alt_dir)
+                                            self.path = [] # Reset trasy, po uniku liczymy A* od nowa
+                                            break
+                                    else:
+                                        self.path = [] # Jeśli nie udało się znaleźć żadnego wolnego pola do uniku, resetujemy trasę, żeby w następnej turze przeliczyć A* z aktualną sytuacją na mapie        
+                                    
+                                    break # Kończymy turę ruchu
+                                else:
+                                    # Blokuje nas twarda przeszkoda, której nie wykryliśmy (może to być np. nowo zbudowany budynek, którego jeszcze nie ma w pamięci)
+                                    # Resetujemy trasę, żeby w następnej turze przeliczyć A* z aktualną sytuacją na mapie
+                                    self.path = []
+                                    break # Kończymy turę ruchu
+
+
+            # ==========================================
+            # 4. ZOSTAWIANIE FEROMONÓW (GOSSIP PROTOCOL)
+            # ==========================================
+            # Losujemy jedną nowinę z VIP Facts (tylko ważne odkrycia).
+            # Wyjątek: boty w BUILD_MINE/BUILD_BELT z 50% szansą nadają rezerwację
+            # swojego złoża (kanał 1) zamiast losowego VIP.
+            forbidden_tiles = {my_pos, future_pos}
+            # Przewidujemy też krok do przodu na następną turę:
+            if self.path:
+                next_planned_pos = future_pos.add(self.path[0])
+                forbidden_tiles.add(next_planned_pos)
+
+            # Szukamy miejsca na marker (wspólne dla obu gałęzi)
+            PROTECTED_BUILDING_TYPES = {
+                EntityType.BRIDGE, EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR,
+                EntityType.SPLITTER, EntityType.HARVESTER, EntityType.FOUNDRY,
+                EntityType.ROAD, EntityType.BARRIER
+            }
+            def find_marker_slot():
+                place_pos = None
+                backup_pos = None
+                for adj_pos in ct.get_nearby_tiles(2):
+                    if ct.can_place_marker(adj_pos):
+                        b_id_adj = ct.get_tile_building_id(adj_pos)
+                        if b_id_adj is not None:
+                            b_type_adj = ct.get_entity_type(b_id_adj)
+                            b_team_adj = ct.get_team(b_id_adj)
+                            if b_team_adj == my_team and b_type_adj in PROTECTED_BUILDING_TYPES:
+                                continue
+                        if adj_pos not in forbidden_tiles:
+                            place_pos = adj_pos
+                            break
+                        elif backup_pos is None and adj_pos != my_pos:
+                            backup_pos = adj_pos
+                return place_pos or backup_pos
+
+            # Decydujemy co nadajemy
+            emit_claim = False
+            claim_ore_pos = None
+            current_state_now = self.bot_state
+            if current_state_now in [BotState.BUILD_MINE, BotState.BUILD_BELT]:
+                claim_ore_pos = self.assigned_ore
+                if claim_ore_pos is not None and random.random() < 0.5:
+                    emit_claim = True
+
+            final_pos = find_marker_slot()
+            if final_pos:
+                if emit_claim and claim_ore_pos is not None:
+                    # Emitujemy rezerwację złoża (kanał 1)
+                    ct.place_marker(final_pos, self.pack_claim_marker(current_round, claim_ore_pos))
+                elif self.vip_facts:
+                    # Emitujemy losowy VIP (kanał 0)
+                    rep_pos = random.choice(list(self.vip_facts.keys()))
+                    rep_env, rep_btype, rep_is_enemy = self.vip_facts[rep_pos]
+                    ct.place_marker(final_pos, self.pack_map_marker(current_round, rep_pos, rep_env, rep_btype, rep_is_enemy))
