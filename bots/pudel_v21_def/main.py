@@ -2524,11 +2524,22 @@ class Player:
                             source_candidates = [last_node]
 
                     near_core_tiles = set()
+                    # 1. Zastrzegamy pola bezpośrednio wokół Core (pod Sentinele i Splittery)
                     for ct_ in self.allied_core_tiles:
                         for dx in range(-1, 2):
                             for dy in range(-1, 2):
                                 near_core_tiles.add(Position(ct_.x + dx, ct_.y + dy))
                     near_core_tiles |= self.allied_core_tiles
+
+                    # ---> 2. REZERWACJA MIEJSCA POD LAUNCHERY <---
+                    # Dodajemy przewidywane pozycje wyrzutni do puli "zakazanych" dla taśmociągów
+                    if self.my_core_center:
+                        launcher_reserved_offsets = [
+                            ( 0, -3), ( 3, -3), ( 3,  0), ( 3,  3),
+                            ( 0,  3), (-3,  3), (-3,  0), (-3, -3)
+                        ]
+                        for dx, dy in launcher_reserved_offsets:
+                            near_core_tiles.add(Position(self.my_core_cx + dx, self.my_core_cy + dy))
 
                     splitter_input_map = {}
                     for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
