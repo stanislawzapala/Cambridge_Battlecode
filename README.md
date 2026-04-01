@@ -11,6 +11,7 @@ Cambridge Battlecode challenge
 ## To do list
 Aktualne:
 - dobry pomysł na dodatkową linię obrony: launcher przed sentinelem (odrzucający wrogie probki wchodzące na nasze splittery)
+- bujild_mine wywala się jak wróg postawi drogę na ore
 - jeśli harras nie trafi we wrogą bazę i tak zaczyna budować bariery
 - harras nie jest w stanie niszczyć naszych dróg aby zbudować barierę, wrogą drogę też
 - explore priorytetyzuje tytan gdy widzi

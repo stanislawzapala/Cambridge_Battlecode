@@ -2320,25 +2320,19 @@ class Player:
                                 self.path = []
             
             elif current_state == BotState.BUILD_BELT:
-                # last_node = ostatni wybudowany element sieci (Harvester, conveyor lub most).
-                # Zadanie: poprowadzić sieć od last_node do Core (lub istniejącej sieci).
-                # Strategia: domyślnie conveyor krok po kroku; most jako objazd gdy pole
-                # zablokowane (ściana, budynek wroga, ruda).
                 last_node = self.last_bridge_node
 
                 if not last_node:
-                    # Brak last_node — nie wiemy skąd prowadzić sieć, uciekamy
                     self.bot_state = BotState.EXPLORE
                     self.target = None
                     self.assigned_ore = None
                 elif not self.allied_core_tiles:
-                    # Nie wiemy gdzie jest Core — idź go znajdź (losowy cel, jak EXPLORE)
-                    if not self.target:
-                        self.target = Position(
-                            random.randint(0, map_width - 1),
-                            random.randint(0, map_height - 1)
-                        )
-                        self.path = []
+                    # Nie wiemy gdzie jest Core — idź go znajdź
+                    self.bot_state = BotState.EXPLORE
+                    self.target = None
+                    self.path = []
+                    # Zabezpieczenie przed błędem zmiennych — kończymy logikę w tej turze!
+                    return
                 else:
                     # --- PRIORYTET: pending_splitter ---
                     pending = self.pending_splitter
@@ -2349,33 +2343,25 @@ class Player:
                         if splitter_there:
                             self.pending_splitter = None
                         elif ct.get_action_cooldown() == 0 and my_pos.distance_squared(pend_pos) <= 2:
-                            # Niszczymy co stoi na polu (marker nasz/wrogi, droga)
                             if ct.can_destroy(pend_pos):
                                 ct.destroy(pend_pos)
                             if ct.can_build_splitter(pend_pos, pend_dir):
                                 ct.build_splitter(pend_pos, pend_dir)
                                 self.allied_splitter_tiles.add(pend_pos)
                                 self.pending_splitter = None
-                            # Jeśli build się nie udał — NIE czyścimy pending, spróbujemy w następnej turze
                         else:
-                            # Za daleko lub cooldown > 0 — idź do pend_pos
                             if self.target != pend_pos:
                                 self.target = pend_pos
                                 self.path = []
 
-                    # delivery_tiles: TYLKO Splittery wokół Core.
-                    # Surowce muszą być dostarczone przez Splittery — nie bezpośrednio do Core.
                     delivery_tiles = self.allied_splitter_tiles
 
-                    # Centrum Core
                     core_xs = [p.x for p in self.allied_core_tiles]
                     core_ys = [p.y for p in self.allied_core_tiles]
                     core_cx = (min(core_xs) + max(core_xs)) // 2
                     core_cy = (min(core_ys) + max(core_ys)) // 2
                     core_center = Position(core_cx, core_cy)
 
-                    # Zawsze uzupełniamy allied_splitter_tiles o wszystkie 8 pozycji knight-offset.
-                    # Bot musi planować trasę do wejścia Splittera nawet jeśli Splitter jeszcze nie stoi.
                     KNIGHT_OFFSETS_DELIVERY = [
                         ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
                         ( 2, 1, Direction.WEST),  ( 1, 2, Direction.NORTH),
@@ -2389,41 +2375,29 @@ class Player:
                         sp_env = self.memory.get(
                             sp_candidate,
                             ct.get_tile_env(sp_candidate) if ct.is_in_vision(sp_candidate) else Environment.EMPTY)
-                        if sp_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                        if sp_env in HARD_OBSTACLES:
                             continue
                         self.allied_splitter_tiles.add(sp_candidate)
 
-                    network_entry_types = {EntityType.BRIDGE, EntityType.CONVEYOR,
-                                           EntityType.ARMOURED_CONVEYOR, EntityType.SPLITTER}
                     current_belt_chain = self.belt_chain
 
                     last_node_env = self.memory.get(
                         last_node,
                         ct.get_tile_env(last_node) if ct.is_in_vision(last_node) else Environment.EMPTY
                     )
-                    last_node_is_ore = last_node_env in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]
+                    last_node_is_ore = last_node_env in ORES
 
-                    # Gdy last_node jest Harvesterem (na rudzie), punktem startowym
-                    # dla sieci jest jedno z czterech ortogonalnych pól obok.
-                    # Gdy last_node nie jest wolne (inny bot coś tam postawił),
-                    # też rozszerzamy source_candidates o sąsiadów — żeby bot nie
-                    # blokował się na zawsze i szukał alternatywnej trasy.
                     if last_node_is_ore:
                         source_candidates = [
                             last_node.add(d) for d in ORTHOGONAL_DIRECTIONS
                             if (lambda p: 0 <= p.x < map_width and 0 <= p.y < map_height)(last_node.add(d))
                         ]
                     else:
-                        # Sprawdzamy czy last_node jest wolne jako source.
-                        # Jeśli nie (ktoś coś tam postawił), dodajemy sąsiadów jako
-                        # alternatywne punkty startowe.
                         last_node_blocked = False
                         if ct.is_in_vision(last_node):
                             b_id_ln_check = ct.get_tile_building_id(last_node)
                             if b_id_ln_check is not None:
                                 bt_ln = ct.get_entity_type(b_id_ln_check)
-                                # Marker i droga → możemy zastąpić (tile_is_buildable to obsłuży)
-                                # Cokolwiek innego (conveyor, most, itd.) → last_node zablokowane
                                 if bt_ln not in (EntityType.MARKER, EntityType.ROAD):
                                     last_node_blocked = True
                         if last_node_blocked:
@@ -2434,45 +2408,15 @@ class Player:
                         else:
                             source_candidates = [last_node]
 
-                    # =========================================================
-                    # FAZA 1: Szukamy najlepszego kroku — conveyor lub most
-                    # Zwracamy: (build_pos, target_pos_or_dir, mode)
-                    #   mode='conveyor': postaw conveyor na build_pos skierowany
-                    #                    w kierunku target (Direction)
-                    #   mode='bridge':   postaw most na build_pos celujący w target (Position)
-                    # Priorytety:
-                    #   1. Conveyor wprost na delivery_tile (Core/Splitter)
-                    #   2. Conveyor wprost na istniejący element sieci
-                    #   3. Conveyor na wolne pole (krok w kierunku Core)
-                    #   4. Most na delivery_tile lub istniejący element sieci (objazd)
-                    #   5. Most na wolne pole (objazd)
-                    # =========================================================
-
-                    # =========================================================
-                    # Pomocnicze funkcje i stałe
-                    # =========================================================
-
-                    # Pola bezpośrednio otaczające Core (distance_sq <= 2 od dowolnego
-                    # pola Core) — tam conveyor NIE może być stawiany.
                     near_core_tiles = set()
                     for ct_ in self.allied_core_tiles:
                         for dx in range(-1, 2):
                             for dy in range(-1, 2):
                                 near_core_tiles.add(Position(ct_.x + dx, ct_.y + dy))
-                    # Dodajemy też pola w odległości skoczka (gdzie są Splittery) —
-                    # tylko pola Core i ich bezpośrednie otoczenie są zarezerwowane
                     near_core_tiles |= self.allied_core_tiles
 
-                    # Mapa wejść Splitterów: splitter_pos → wymagane pole wejściowe
-                    # Wejście = splitter_pos.add(faces.opposite())
-                    KNIGHT_OFFSETS_SP = [
-                        ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
-                        ( 2, 1, Direction.WEST),  ( 1, 2, Direction.NORTH),
-                        (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
-                        (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
-                    ]
-                    splitter_input_map = {}  # splitter_pos → input_pos
-                    for ddx, ddy, sp_faces in KNIGHT_OFFSETS_SP:
+                    splitter_input_map = {}
+                    for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
                         sp = Position(core_cx + ddx, core_cy + ddy)
                         if sp in self.allied_splitter_tiles:
                             splitter_input_map[sp] = sp.add(sp_faces.opposite())
@@ -2488,67 +2432,42 @@ class Player:
                             b_id_t = ct.get_tile_building_id(pos)
                             if b_id_t is not None:
                                 b_type_t = ct.get_entity_type(b_id_t)
-                                # Markery (nasz lub wrogi) — można zastąpić
                                 if b_type_t == EntityType.MARKER:
                                     return True
-                                # Nasza droga — można zastąpić (destroy + build)
                                 if b_type_t == EntityType.ROAD and ct.get_team(b_id_t) == my_team:
                                     return True
                                 return False
                         return True
 
                     def is_existing_network(pos):
-                        
                         if pos in current_belt_chain:
                             return False
                         mem = self.buildings.get(pos)
                         if mem is not None:
                             mt, mteam, _, _ = mem
-                            if mteam == my_team and mt in network_entry_types:
+                            if mteam == my_team and mt in NETWORK:
                                 return True
                         return False
-
-                    # =========================================================
-                    # Szukamy najlepszego kroku (build_pos, build_target, build_mode)
-                    # Konwencja:
-                    #   conveyor: build_pos = pole gdzie stanie conveyor (source),
-                    #             build_target = Direction (na cand)
-                    #             last_node po budowie = build_pos.add(build_target) = cand
-                    #   bridge:   build_pos = pole gdzie stanie most (source),
-                    #             build_target = Position (cel mostu)
-                    #             last_node po budowie = build_target
-                    #
-                    # REGUŁY WPIĘCIA:
-                    # Conveyor (ostatni element) może wskazywać na:
-                    #   - Splitter: TYLKO od strony wejściowej (source == splitter_input_map[sp])
-                    #   - Istniejący conveyor/most: OK
-                    #   - NIE na pole Core
-                    #   - NIE na pola bezpośrednio otaczające Core (near_core_tiles)
-                    #     jako source (tam conveyor nie może stać)
-                    # Bridge może mieć wyjście (build_target) na:
-                    #   - Polu Core: OK (most dostarcza wprost)
-                    #   - Splitterze: OK
-                    #   - Istniejącym elemencie sieci: OK
-                    #   - Wolnym polu: krok pośredni
-                    # =========================================================
 
                     build_pos = None
                     build_target = None
                     build_mode = None
                     build_is_network = False
                     best_score = float('inf')
-                    
+
                     # =========================================================
                     # NOWOŚĆ: UZBRAJANIE SPLITTERA BAZOWEGO PRZED ZAKOŃCZENIEM MISJI
                     # =========================================================
                     sentinel_task = None
-                    if last_node in delivery_tiles and ct.is_in_vision(last_node):
+                    is_at_base = (last_node in delivery_tiles)
+
+                    if is_at_base and ct.is_in_vision(last_node):
                         b_id_ln_sp = ct.get_tile_building_id(last_node)
+                        # Splitter już stoi
                         if b_id_ln_sp is not None and ct.get_team(b_id_ln_sp) == my_team and ct.get_entity_type(b_id_ln_sp) == EntityType.SPLITTER:
                             
                             sentinels_needed = []
                             if self.my_core_center:
-                                core_cx, core_cy = self.my_core_center.x, self.my_core_center.y
                                 # Twarde pozycje dokładnie takie same jak w logice tury 150+
                                 global_sentinel_offsets = [
                                     ( 0, -2, Direction.NORTH),   # N
@@ -2585,27 +2504,58 @@ class Player:
                             if sentinels_needed:
                                 sentinel_task = sentinels_needed[0] # Bierzemy pierwszego z brzegu
 
+                        # Zabezpieczenie: jeśli jesteśmy w delivery_tiles, a Splittera brak i nie ma pending_splitter
+                        elif self.pending_splitter is None:
+                            for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
+                                if last_node == Position(core_cx + ddx, core_cy + ddy):
+                                    self.pending_splitter = (last_node, sp_faces)
+                                    break
+
                     # Jeśli mamy bojowe zadanie zbrojenia, wyłączamy całkowicie poszukiwanie tras do budowy taśmociągów!
                     if sentinel_task is not None:
                         build_pos = sentinel_task[0]
                         build_target = sentinel_task[1]
                         build_mode = 'sentinel'
                         build_is_network = False
-                        source_candidates = []  # Wymusza ominięcie standardowej logiki ciągnięcia pasa
+                        source_candidates = []  # Omijamy pętlę szukania trasy
+
+                    # =========================================================
+                    # KROK 4: Sprawdź czy misja zakończona.
+                    # =========================================================
+                    mission_done = False
+                    if is_at_base:
+                        # W bazie kończymy misję TYLKO gdy Splitter stoi i zadań na sentinele nie ma
+                        if self.pending_splitter is None and sentinel_task is None:
+                            if ct.is_in_vision(last_node):
+                                b_id_ln = ct.get_tile_building_id(last_node)
+                                if b_id_ln is not None and ct.get_team(b_id_ln) == my_team and ct.get_entity_type(b_id_ln) == EntityType.SPLITTER:
+                                    mission_done = True
+                    else:
+                        # Wpinamy się w zwykłą sieć - kończymy jeśli podłączono
+                        if is_existing_network(last_node):
+                            mission_done = True
+
+                    if mission_done:
+                        self.bot_state = BotState.EXPLORE
+                        self.target = None
+                        self.path = []
+                        self.belt_chain = set()
+                        self.pending_splitter = None
+                        self.assigned_ore = None
+
 
                     for source in source_candidates:
                         if not (0 <= source.x < map_width and 0 <= source.y < map_height):
                             continue
                         src_env = self.memory.get(
                             source, ct.get_tile_env(source) if ct.is_in_vision(source) else Environment.EMPTY)
-                        if src_env in [Environment.WALL, Environment.ORE_TITANIUM, Environment.ORE_AXIONITE]:
+                        if src_env in HARD_OBSTACLES:
                             continue
 
                         src_dist = source.distance_squared(core_center)
                         source_buildable = tile_is_buildable(source)
 
                         # ---- CONVEYOR ----
-                        # source NIE może leżeć w near_core_tiles
                         if source_buildable and source not in near_core_tiles:
                             for d in ORTHOGONAL_DIRECTIONS:
                                 cand = source.add(d)
@@ -2616,21 +2566,17 @@ class Player:
 
                                 cand_dist = cand.distance_squared(core_center)
 
-                                # Przypadek A: cand to Splitter — tylko od strony wejściowej
+                                # Przypadek A: cand to Splitter
                                 if cand in self.allied_splitter_tiles:
                                     required_input = splitter_input_map.get(cand)
                                     if required_input is None or source != required_input:
                                         continue  # zła strona Splittera
-                                    # Sprawdź czy Splitter jest już zasilany
-                                    # (czy jakiś sąsiad ma nasz conveyor/most wskazujący na niego)
                                     splitter_fed = False
                                     if ct.is_in_vision(cand):
                                         for d_feed in ORTHOGONAL_DIRECTIONS:
                                             feed_pos = cand.add(d_feed)
-                                            # --- POPRAWKA: Zabezpieczenie przed wyjściem poza mapę ---
                                             if not (0 <= feed_pos.x < map_width and 0 <= feed_pos.y < map_height):
                                                 continue
-                                            # ----------------------------------------------------------
                                             if not ct.is_in_vision(feed_pos):
                                                 continue
                                             b_id_feed = ct.get_tile_building_id(feed_pos)
@@ -2653,8 +2599,6 @@ class Player:
                                                         break
                                                 except Exception:
                                                     pass
-                                    # Wolny Splitter → wyższy priorytet (score=0)
-                                    # Zajęty Splitter → niższy priorytet (score=2)
                                     score = 2 if splitter_fed else 0
                                     if score < best_score:
                                         best_score = score
@@ -2663,47 +2607,27 @@ class Player:
                                         build_mode = 'conveyor'
                                         build_is_network = True
 
-                                # Przypadek B: cand to istniejący element sieci (conveyor/most)
-                                # NIE Core, NIE Splitter (już obsłużony)
-                                # elif cand not in self.allied_core_tiles and is_existing_network(cand):
-                                #     if not (cand_dist < src_dist):  # progress guard
-                                #         continue
-                                #     score = 1
-                                #     if score < best_score:
-                                #         best_score = score
-                                #         build_pos = source
-                                #         build_target = d
-                                #         build_mode = 'conveyor'
-                                #         build_is_network = True
-
-                                
-                                # Przypadek B: Wpięcie w istniejący element sieci (conveyor/most)
+                                # Przypadek B: Wpięcie w istniejącą sieć
                                 elif cand not in self.allied_core_tiles and is_existing_network(cand):
-                                    if not (cand_dist < src_dist):  # Musi nas to zbliżać do bazy
+                                    if not (cand_dist < src_dist):  
                                         continue
-
-                                    # --- INTELIGENTNY DETEKTOR KORKÓW ---
                                     is_clogged = False
                                     try:
                                         b_id_cand = ct.get_tile_building_id(cand)
                                         cand_type = ct.get_entity_type(b_id_cand)
-                                        
-                                        # Sprawdzamy zator głębiej, aby odróżnić jadący surowiec od stojącego korka
                                         if cand_type == EntityType.CONVEYOR and ct.get_stored_resource(b_id_cand) is not None:
                                             cand_dir = ct.get_direction(b_id_cand)
                                             next_pos = cand.add(cand_dir)
                                             if ct.is_in_vision(next_pos):
                                                 b_id_next = ct.get_tile_building_id(next_pos)
-                                                # Jeśli następny element taśmy też ma na sobie rudę, to przepustowość leży
                                                 if b_id_next and ct.get_stored_resource(b_id_next) is not None:
                                                     is_clogged = True
                                     except Exception:
                                         pass
 
                                     if is_clogged:
-                                        continue  # Autostrada pełna! Szukamy innej opcji (np. budowa nowej linii)
+                                        continue 
 
-                                    # Taśma jest luźna (ma wolną przepustowość) - wpinamy się oszczędzając Tytan
                                     score = 150 + cand_dist
                                     if score < best_score:
                                         best_score = score
@@ -2712,12 +2636,10 @@ class Player:
                                         build_mode = 'conveyor'
                                         build_is_network = True
 
-                                # Przypadek D: wolne pole — krok pośredni (Budowa nowej linii)
+                                # Przypadek D: wolne pole
                                 elif (cand not in near_core_tiles
                                         and tile_is_buildable(cand)
                                         and cand_dist < src_dist):
-                                    # Puste pole ma wyższy (gorszy) score bazowy (200).
-                                    # Jeśli taśma obok jest drożna (score 150), bot najpierw wepnie się w nią.
                                     score = 200 + cand_dist
                                     if score < best_score:
                                         best_score = score
@@ -2728,12 +2650,7 @@ class Player:
 
 
                         # ---- MOST ----
-                        # Most może startować z dowolnego buildable source (w tym near_core)
-                        # Most szukamy zawsze (nie tylko gdy ortho_blocked) —
-                        # ale priorytet niższy niż conveyor wpięcia (score >= 200)
                         if source_buildable:
-                            # Sprawdzamy co stoi na source — nie nadbudowujemy innych budynków,
-                            # ale markery (nasz lub wrogi) i nasze drogi można zastąpić mostem.
                             if ct.is_in_vision(source):
                                 b_id_src = ct.get_tile_building_id(source)
                                 if b_id_src is not None:
@@ -2742,7 +2659,7 @@ class Player:
                                     replaceable = (bt_src == EntityType.MARKER or
                                                    (bt_src == EntityType.ROAD and tm_src == my_team))
                                     if not replaceable:
-                                        continue  # nie nadbudowujemy innych budynków
+                                        continue  
 
                             for dx in range(-3, 4):
                                 for dy in range(-3, 4):
@@ -2756,21 +2673,17 @@ class Player:
                                         continue
                                     end_dist = end_pos.distance_squared(core_center)
 
-                                    # Przypadek A: pole Core — niedozwolone jako cel mostu.
-                                    # Surowce muszą płynąć przez Splittery.
                                     if end_pos in self.allied_core_tiles:
-                                        pass  # pominięte
+                                        pass  
 
-                                    # Przypadek B: end_pos to Splitter
                                     elif end_pos in self.allied_splitter_tiles:
-                                        # Preferuj niezasilany Splitter
                                         splitter_fed_b = False
                                         if ct.is_in_vision(end_pos):
                                             for d_feed in ORTHOGONAL_DIRECTIONS:
                                                 feed_pos = end_pos.add(d_feed)
-                                                if not ct.is_in_vision(feed_pos):
-                                                    continue
                                                 if not (0 <= feed_pos.x < map_width and 0 <= feed_pos.y < map_height):
+                                                    continue
+                                                if not ct.is_in_vision(feed_pos):
                                                     continue
                                                 b_id_feed = ct.get_tile_building_id(feed_pos)
                                                 if b_id_feed is None:
@@ -2800,19 +2713,16 @@ class Player:
                                             build_mode = 'bridge'
                                             build_is_network = True
 
-                                    # Przypadek C: most w istniejącą sieć
                                     elif is_existing_network(end_pos):
                                         if end_dist >= src_dist:
                                             continue
                                         if end_pos in near_core_tiles:
                                             continue
                                             
-                                        # Inteligentny detektor korków dla zrzutu z mostu
                                         is_clogged = False
                                         try:
                                             b_id_end = ct.get_tile_building_id(end_pos)
                                             end_type = ct.get_entity_type(b_id_end)
-                                            
                                             if end_type == EntityType.CONVEYOR and ct.get_stored_resource(b_id_end) is not None:
                                                 end_dir = ct.get_direction(b_id_end)
                                                 next_pos = end_pos.add(end_dir)
@@ -2824,7 +2734,7 @@ class Player:
                                             pass
                                             
                                         if is_clogged:
-                                            continue # Cel zapchany, nie lądujemy tu mostem
+                                            continue 
                                             
                                         score = 250 + end_dist
                                         if score < best_score:
@@ -2834,8 +2744,6 @@ class Player:
                                             build_mode = 'bridge'
                                             build_is_network = True
 
-                                    # Przypadek D: wolne pole — krok pośredni
-                                    # NIE lądujemy na near_core_tiles (zarezerwowane dla Splitterów/Sentineli)
                                     elif (end_pos not in near_core_tiles
                                             and tile_is_buildable(end_pos)
                                             and end_dist < src_dist):
@@ -2847,55 +2755,6 @@ class Player:
                                             build_mode = 'bridge'
                                             build_is_network = False
 
-                    
-                    # =========================================================
-                    # KROK 4: Sprawdź czy misja zakończona.
-                    # =========================================================
-                    mission_done = False
-                    if last_node in delivery_tiles:
-                        if ct.is_in_vision(last_node):
-                            b_id_ln_sp = ct.get_tile_building_id(last_node)
-                            if b_id_ln_sp is not None and ct.get_team(b_id_ln_sp) == my_team and ct.get_entity_type(b_id_ln_sp) == EntityType.SPLITTER:
-                                # KRYTYCZNA ZMIANA: Kończymy misję dopiero wtedy, gdy nie ma Sentineli do zbudowania!
-                                if sentinel_task is None:
-                                    mission_done = True
-                        elif self.pending_splitter is None:
-                            # Splitter nie stoi — musimy go zbudować; ustawiamy pending_splitter
-                            for ddx, ddy, sp_faces in [
-                                ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
-                                ( 2, 1, Direction.WEST),  ( 1, 2, Direction.NORTH),
-                                (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
-                                (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
-                            ]:
-                                if last_node == Position(core_cx + ddx, core_cy + ddy):
-                                    self.pending_splitter = (last_node, sp_faces)
-                                    break
-                                    
-                    # Jeśli nie w zasięgu wzroku — czekamy aż będzie widać
-                    if not mission_done and ct.is_in_vision(last_node):
-                        b_id_ln = ct.get_tile_building_id(last_node)
-                        if b_id_ln is not None and ct.get_team(b_id_ln) == my_team:
-                            if ct.get_entity_type(b_id_ln) in {EntityType.SPLITTER, EntityType.CORE}:
-                                if sentinel_task is None:  # ZABEZPIECZENIE
-                                    mission_done = True
-                                    
-                    if not mission_done:
-                        if is_existing_network(last_node):
-                            if sentinel_task is None:  # ZABEZPIECZENIE
-                                mission_done = True
-                                
-                    if mission_done:
-                        self.bot_state = BotState.EXPLORE
-                        self.target = None
-                        self.path = []
-                        self.belt_chain = set()
-                        self.pending_splitter = None
-                        self.assigned_ore = None
-
-                    
-                    
-                    
-                    
                     # =========================================================
                     # FAZA WYKONANIA
                     # =========================================================
@@ -2903,7 +2762,6 @@ class Player:
 
                         # --- TRYB SENTINEL: gdy stuck >= 20, ignoruj build_pos ---
                         if self.belt_stuck_counter >= 20:
-                            # Jeśli nie stać na Sentinela — czekaj przy last_node zamiast porzucać
                             if not self._can_afford_build(ct, 'sentinel'):
                                 if self.target != last_node:
                                     self.target = last_node
@@ -2913,20 +2771,19 @@ class Player:
                                          and ct.is_in_vision(last_node)
                                          and my_pos.distance_squared(last_node) <= 2)
                                 if not ready:
-                                    # Idź do last_node i poczekaj
                                     self.belt_stuck_counter = 20
                                     if self.target != last_node:
                                         self.target = last_node
                                         self.path = []
                                 else:
-                                    # Buduj Sentinela — kierunek w stronę środka mapy
                                     map_center = Position(map_width // 2, map_height // 2)
                                     dx = map_center.x - last_node.x
                                     dy = map_center.y - last_node.y
                                     best_sentinel_dir = None
                                     best_dot = float('-inf')
                                     for cand_dir in DIRECTIONS:
-                                        ddx, ddy = cand_dir.delta()
+                                        # POPRAWKA BŁĘDU: Używamy DIR_DELTAS zamiast .delta() !
+                                        ddx, ddy = DIR_DELTAS[cand_dir]
                                         dot = dx * ddx + dy * ddy
                                         if dot > best_dot:
                                             best_dot = dot
@@ -2952,7 +2809,6 @@ class Player:
                                         ct.destroy(last_node)
                                     if ct.can_build_sentinel(last_node, sentinel_dir):
                                         ct.build_sentinel(last_node, sentinel_dir)
-                                    # Niezależnie od wyniku — porzucamy nitkę
                                     self.bot_state = BotState.EXPLORE
                                     self.target = None
                                     self.path = []
@@ -2963,12 +2819,9 @@ class Player:
                         elif build_pos is not None and build_target is not None:
 
                             if my_pos == build_pos:
-                                # Stoimy NA build_pos — zejdź.
                                 if build_mode in ['conveyor', 'sentinel']:
-                                    # Dla taśmociągów i wieżyczek build_target to Direction
                                     away_pos = build_pos.add(build_target)
                                 else:
-                                    # Dla mostów build_target to Position
                                     away_pos = build_target
                                 for try_dir in sorted(DIRECTIONS, key=lambda d: my_pos.add(d).distance_squared(away_pos)):
                                     if ct.can_move(try_dir):
@@ -2978,8 +2831,6 @@ class Player:
                                 self.target = build_pos
 
                             elif my_pos.distance_squared(build_pos) <= 2:
-                                # Stoimy obok — budujemy.
-                                # KROK A: Conveyor/most (priorytet 3) może zastąpić marker i drogę
                                 if self.can_replace_with(build_pos, 3, my_team, ct) and ct.can_destroy(build_pos):
                                     ct.destroy(build_pos)
 
@@ -2999,137 +2850,75 @@ class Player:
                                             built = True
 
                                     if built:
-                                        self.belt_stuck_counter = 0  # postęp — resetuj licznik
+                                        self.belt_stuck_counter = 0  
                                         if build_mode == 'sentinel':
-                                            # Bot zbudował Sentinela, zostaje przy Splitterze na drugą stronę
                                             self.target = last_node
                                             self.path = []
                                         elif build_mode == 'conveyor':
                                             conv_output = build_pos.add(build_target)
                                             self.last_bridge_node = conv_output
                                             self.belt_chain.add(build_pos)
-                                            # pending_splitter jeśli conveyor wskazuje na nieistniejący splitter
                                             if conv_output in self.allied_splitter_tiles:
                                                 b_id_sp_cv = ct.get_tile_building_id(conv_output) if ct.is_in_vision(conv_output) else None
                                                 splitter_there_cv = (b_id_sp_cv is not None and ct.get_entity_type(b_id_sp_cv) == EntityType.SPLITTER)
                                                 if not splitter_there_cv and self.pending_splitter is None:
-                                                    for ddx, ddy, sp_faces in [
-                                                        ( 1,-2, Direction.SOUTH), ( 2,-1, Direction.WEST),
-                                                        ( 2, 1, Direction.WEST),  ( 1, 2, Direction.NORTH),
-                                                        (-1, 2, Direction.NORTH), (-2, 1, Direction.EAST),
-                                                        (-2,-1, Direction.EAST),  (-1,-2, Direction.SOUTH),
-                                                    ]:
+                                                    for ddx, ddy, sp_faces in KNIGHT_OFFSETS_DELIVERY:
                                                         if conv_output == Position(core_cx + ddx, core_cy + ddy):
                                                             self.pending_splitter = (conv_output, sp_faces)
                                                             break
-                                            # USUNIĘTO TWARDY EXIT DO EXPLORE! Zlecamy ocenę KROKOWI 4.
                                             self.target = self.last_bridge_node
                                             self.path = []
 
                                         else:  # bridge
-                                            # last_node = build_target (cel mostu)
                                             self.last_bridge_node = build_target
                                             self.belt_chain.add(build_pos)
                                             self.belt_chain.add(build_target)
-                                            # pending_splitter jeśli most wylądował na Splitterze
                                             if build_target in self.allied_splitter_tiles:
                                                 b_id_end = ct.get_tile_building_id(build_target) if ct.is_in_vision(build_target) else None
                                                 splitter_there = (b_id_end is not None and ct.get_entity_type(b_id_end) == EntityType.SPLITTER)
                                                 if not splitter_there:
-                                                    sp_cx = (min(core_xs) + max(core_xs)) // 2
-                                                    sp_cy = (min(core_ys) + max(core_ys)) // 2
-                                                    knight_offsets = [
-                                                        ( 1, -2, Direction.SOUTH),
-                                                        ( 2, -1, Direction.WEST),
-                                                        ( 2,  1, Direction.WEST),
-                                                        ( 1,  2, Direction.NORTH),
-                                                        (-1,  2, Direction.NORTH),
-                                                        (-2,  1, Direction.EAST),
-                                                        (-2, -1, Direction.EAST),
-                                                        (-1, -2, Direction.SOUTH),
-                                                    ]
-                                                    for ddx, ddy, faces in knight_offsets:
-                                                        if build_target == Position(sp_cx + ddx, sp_cy + ddy):
+                                                    for ddx, ddy, faces in KNIGHT_OFFSETS_DELIVERY:
+                                                        if build_target == Position(core_cx + ddx, core_cy + ddy):
                                                             self.pending_splitter = (build_target, faces)
                                                             break
-                                            # USUNIĘTO TWARDY EXIT DO EXPLORE! Zlecamy ocenę KROKOWI 4.
-                                            self.target = self.last_bridge_node
-                                            self.path = []
-                                            
-                                        if build_is_network:
-                                            # Wpięliśmy się w sieć — misja zakończona
-                                            self.bot_state = BotState.EXPLORE
-                                            self.target = None
-                                            self.path = []
-                                            self.belt_chain = set()
-                                            self.assigned_ore = None
-                                        else:
-                                            # Celujemy w nowy last_node (output conveyora
-                                            # lub cel mostu) — skąd zbudujemy następny krok
                                             self.target = self.last_bridge_node
                                             self.path = []
                                     else:
-                                        # Nie udało się zbudować.
-                                        # Sprawdzamy czy to kwestia surowców — jeśli tak, czekamy.
                                         if not self._can_afford_build(ct, build_mode):
-                                            # Brak surowców — stój przy build_pos i czekaj,
-                                            # NIE inkrementuj stuck, NIE resetuj celu.
                                             self.target = build_pos
                                             self.path = []
                                         else:
-                                            # Stać nas, ale can_build zwróciło False z innego powodu
-                                            # (np. pole zajęte przez budynek którego nie widzieliśmy)
-                                            # — resetuj cel i przelicz w następnej turze.
                                             self.target = None
                                             self.path = []
                                 else:
-                                    # Cooldown > 0 — czekaj
                                     self.target = build_pos
 
                             else:
-                                # Za daleko — idź do build_pos
                                 if self.target != build_pos:
                                     self.target = build_pos
                                     self.path = []
 
                         else:
-                            # Brak opcji budowy geometrycznie.
-                            # Sprawdzamy czy to kwestia surowców: obliczamy czy stać nas
-                            # na conveyor i na bridge. Jeśli nie stać na żaden —
-                            # czekamy bez inkrementacji stuck (nie jest to prawdziwy dead-end).
-                            # Sentinel (tryb stuck) też wymaga surowców — sprawdzamy go osobno.
                             waiting_for_resources = (
                                 not self._can_afford_build(ct, 'conveyor')
                                 and not self._can_afford_build(ct, 'bridge')
                             )
                             if not waiting_for_resources:
-                                # Brak opcji budowy — inkrementuj licznik stuck.
                                 self.belt_stuck_counter = self.belt_stuck_counter + 1
-                                # (gdy stuck >= 20, tryb Sentinela obsłuży to na początku
-                                # FAZY WYKONANIA w następnej turze)
-                            # W obu przypadkach: podejdź do last_node i czekaj.
-                            # Jeśli last_node jest już w sieci, zakończ misję.
-                            if last_node in delivery_tiles or is_existing_network(last_node):
-                                self.bot_state = BotState.EXPLORE
-                                self.target = None
+
+                            wait_target = last_node
+                            if last_node_is_ore:
+                                for d_wait in ORTHOGONAL_DIRECTIONS:
+                                    wp = last_node.add(d_wait)
+                                    if not (0 <= wp.x < map_width and 0 <= wp.y < map_height):
+                                        continue
+                                    wp_env = self.memory.get(wp, ct.get_tile_env(wp) if ct.is_in_vision(wp) else Environment.EMPTY)
+                                    if wp_env not in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE, Environment.WALL]:
+                                        wait_target = wp
+                                        break
+                            if self.target != wait_target:
+                                self.target = wait_target
                                 self.path = []
-                                self.belt_chain = set()
-                                self.pending_splitter = None
-                                self.assigned_ore = None
-                            else:
-                                wait_target = last_node
-                                if last_node_is_ore:
-                                    for d_wait in ORTHOGONAL_DIRECTIONS:
-                                        wp = last_node.add(d_wait)
-                                        if not (0 <= wp.x < map_width and 0 <= wp.y < map_height):
-                                            continue
-                                        wp_env = self.memory.get(wp, ct.get_tile_env(wp) if ct.is_in_vision(wp) else Environment.EMPTY)
-                                        if wp_env not in [Environment.ORE_TITANIUM, Environment.ORE_AXIONITE, Environment.WALL]:
-                                            wait_target = wp
-                                            break
-                                if self.target != wait_target:
-                                    self.target = wait_target
-                                    self.path = []
 
 
             elif current_state == BotState.BUILD_BUNKER:
