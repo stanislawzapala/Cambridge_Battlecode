@@ -162,8 +162,9 @@ class Player:
         self.target: Position | None = None
         self.path: list[Direction] = []
         self.spawn_round: int = 0 
-        # ---> NOWOŚĆ: Pamięć odciętych stref (Blacklist) <---
-        self.unreachable_targets: dict[Position, int] = {}
+        # ---> NOWOŚĆ: Pamięć odciętych stref i stref zagrożenia <---
+        self.permanent_blacklist: set[Position] = set()
+        self.temporary_blacklist: dict[Position, int] = {}
         
         # --- WYDOBYCIE ---
         # Złoże które dany bot aktualnie obsługuje (BUILD_MINE / BUILD_BELT)
@@ -209,39 +210,33 @@ class Player:
 
        
 
-    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False, ignore_buildings: bool = False) -> list[Direction] | None:
+    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False, ignore_buildings: bool = False, ignore_temporary: bool = False) -> list[Direction] | None:
         """
-        Zwraca listę kierunków za pomocą optymistycznego Frontier A* (Frontier A-Star). 
-        Możemy ustawić stop_adjacent=True, jeśli chcemy, żeby bot zatrzymał się na polu obok celu (przydatne np. do budowania).
+        Zwraca listę kierunków za pomocą A*. 
+        Uwzględnia permanent_blacklist oraz temporary_blacklist (zależnie od flagi ignore_temporary).
         """
-        
-        # Kolejka priorytetowa: trzyma krotki (priorytet, koszt_do_tej_pory, x, y, pozycja)
         queue = []
         heapq.heappush(queue, (0, 0, start.x, start.y, start))
         
         came_from = {start: None}
         cost_so_far = {start: 0}
         iterations = 0
-        
-        target_node = None # Zmienna zapamiętująca, gdzie fizycznie skończyliśmy
+        target_node = None
 
-        # Najpierw posortujmy kierunki tak, aby te najbliżej celu (minimalny dystans do targetu) były pierwsze - wyciągamy tylko pierwszy kierunek
+        # Preferencja kierunków
         DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
 
         while queue:
             iterations += 1
             if iterations > 2000:
-                # FRONTIER A*: Skończył się limit czasu! 
-                # Zamiast się poddawać, wyciągamy z kolejki NAJLEPSZY punkt, który A* zamierzał właśnie sprawdzić.
                 if queue:
                     _, _, _, _, best_node = heapq.heappop(queue)
                     target_node = best_node
                 break
             
-            
-            # Wyciągamy kafelek, który ma NAJLEPSZY priorytet (najbliżej celu)
             priority, current_cost, _, _, curr = heapq.heappop(queue)
 
+            # Sprawdzanie celu
             if stop_adjacent and curr.distance_squared(target) <= 2:
                 target_node = curr
                 break
@@ -249,60 +244,50 @@ class Player:
                 target_node = curr
                 break
             
-            
             for d in DIRECTIONS_PREFERENCE:
                 next_pos = curr.add(d)
                 
+                # 1. Granice mapy
                 if not (0 <= next_pos.x < w and 0 <= next_pos.y < h):
                     continue
                 
-                # Każdy krok kosztuje nas 1 punkt
+                # 2. NOWOŚĆ: Walidacja przez czarne listy (Permanent i Temporary)
+                if not self.is_tile_valid(next_pos, ignore_temporary=ignore_temporary):
+                    continue
+
                 new_cost = current_cost + 1
                 
-                # Jeśli jeszcze tu nie byliśmy ALBO znaleźliśmy tańszą/szybszą ścieżkę do tego pola
                 if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
-                    
+                    # 3. Sprawdzanie terenu (ściany/ruda w pamięci)
                     memory_env = self.memory.get(next_pos, Environment.EMPTY)
                     if memory_env in HARD_OBSTACLES:
-                        continue # Pamiętamy, że tu jest mur lub ruda, omijamy!
+                        continue 
                     
-                    # ---> 2. ZMIANA TUTAJ: Włącznik ignorowania budynków <---
+                    # 4. Sprawdzanie budynków
                     if not ignore_buildings:
-                        is_blocked = False
                         b_info = self.buildings.get(next_pos)
                         if b_info is not None:
                             b_type, b_team, _, _ = b_info
                             if b_type is not None:
+                                # Blokujemy, jeśli to nie jest coś, po czym można chodzić
                                 if b_type not in passable_types and b_type != EntityType.CORE:
-                                    is_blocked = True
+                                    continue
+                                # Wrogi rdzeń zawsze blokuje
                                 elif b_type == EntityType.CORE and b_team != my_team:
-                                    is_blocked = True
-                        if is_blocked:
-                            continue
+                                    continue
 
-
-                    # 2. ZAPISUJEMY KOSZT
+                    # Obliczanie priorytetu
                     cost_so_far[next_pos] = new_cost
-                    
-                    # 3. A*: Podstawowa heurystyka (Czebyszew)
                     heuristic = max(abs(next_pos.x - target.x), abs(next_pos.y - target.y))
                     
-                    # --- TIE-BREAKER (Lekarstwo na zygzaki) ---
-                    # Obliczamy wektory, żeby sprawdzić, czy zjeżdżamy z idealnej prostej
-                    dx1 = next_pos.x - target.x
-                    dy1 = next_pos.y - target.y
-                    dx2 = start.x - target.x
-                    dy2 = start.y - target.y
-                    
-                    # Iloczyn wektorowy
+                    # Tie-breaker (prosta linia)
+                    dx1, dy1 = next_pos.x - target.x, next_pos.y - target.y
+                    dx2, dy2 = start.x - target.x, start.y - target.y
                     cross_product = abs(dx1 * dy2 - dx2 * dy1)
                     
-                    # Priorytet to: koszt + heurystyka + mała kara za zjazd z prostej linii
                     priority = new_cost + heuristic + (cross_product * 0.0001)
-                    
-                    # Wrzucamy do kolejki
                     heapq.heappush(queue, (priority, new_cost, next_pos.x, next_pos.y, next_pos))
-                    came_from[next_pos] = (curr, d) # type: ignore
+                    came_from[next_pos] = (curr, d)
 
         # Odtwarzanie ścieżki
         if target_node is None or target_node not in came_from:
@@ -311,7 +296,7 @@ class Player:
         path = []
         curr = target_node
         while curr != start:
-            prev_pos, move_dir = came_from[curr] # type: ignore
+            prev_pos, move_dir = came_from[curr]
             path.append(move_dir)
             curr = prev_pos
             
@@ -381,9 +366,10 @@ class Player:
 
 
     def find_nearest_vip_target(self, my_pos: Position, vip_facts: dict, 
-                                target_envs: list[Environment] = None, # type: ignore
-                                target_btypes: list[EntityType] = None, # type: ignore
-                                ownership: str = 'empty') -> Position | None:
+                                target_envs: list[Environment] = None, 
+                                target_btypes: list[EntityType] = None, 
+                                ownership: str = 'empty',
+                                validator=None) -> Position | None:
         """
         Uniwersalna wyszukiwarka w bazie VIP.
         ownership: 'empty' (brak budynku), 'mine' (nasz budynek), 'enemy' (wrogi budynek), 'any' (obojętnie)
@@ -392,23 +378,17 @@ class Player:
         min_distance = float('inf')
         
         for pos, (env, b_type, is_enemy) in vip_facts.items():
-            # 1. FILTR TERENU (jeśli podano listę, sprawdzamy czy pasuje)
-            if target_envs is not None and env not in target_envs:
+            # (Filtry terenu, budynku i własności zostają bez zmian...)
+            if target_envs is not None and env not in target_envs: continue
+            if target_btypes is not None and b_type not in target_btypes: continue
+            if ownership == 'empty' and b_type is not None: continue
+            if ownership == 'mine' and (b_type is None or is_enemy): continue
+            if ownership == 'enemy' and (b_type is None or not is_enemy): continue
+            
+            # ---> NOWOŚĆ: Użycie walidatora <---
+            if validator and not validator(pos):
                 continue
                 
-            # 2. FILTR BUDYNKU (jeśli podano listę, sprawdzamy czy pasuje)
-            if target_btypes is not None and b_type not in target_btypes:
-                continue
-                
-            # 3. FILTR WŁASNOŚCI
-            if ownership == 'empty' and b_type is not None:
-                continue
-            if ownership == 'mine' and (b_type is None or is_enemy):
-                continue
-            if ownership == 'enemy' and (b_type is None or not is_enemy):
-                continue
-                
-            # Jeśli przeszliśmy wszystkie filtry, sprawdzamy odległość
             dist = my_pos.distance_squared(pos)
             if dist < min_distance:
                 min_distance = dist
@@ -625,6 +605,17 @@ class Player:
         }
         
         return mapping[octant]
+    
+
+    def is_tile_valid(self, pos: Position, ignore_temporary: bool = False) -> bool:
+        """Sprawdza, czy pole jest bezpieczne i fizycznie dostępne. Możemy ignorować temporary_blacklist"""
+        if pos in self.permanent_blacklist:
+            return False
+            
+        if pos in self.temporary_blacklist:
+            if not ignore_temporary:
+                return False
+        return True
     
     
     
@@ -1043,6 +1034,13 @@ class Player:
             # ==========================================
             # 1. SKANOWANIE I AKTUALIZACJA MAPY W PAMIĘCI
             # ==========================================
+            
+            # (Opcjonalnie) Czyszczenie starych stref zagrożenia, żeby temporary_blacklist nie rosła w nieskończoność
+            # skoro usunąłeś to z is_tile_valid:
+            # keys_to_remove = [k for k, v in self.temporary_blacklist.items() if current_round - v > 30]
+            # for k in keys_to_remove:
+            #     del self.temporary_blacklist[k]
+
             for pos in ct.get_nearby_tiles():
                 # 1. PAMIĘĆ STATYCZNA (Teren - to się nigdy nie zmienia)
                 if pos not in self.memory:
@@ -1052,7 +1050,33 @@ class Player:
                         # Jeśli to ważne odkrycie (ściana lub ruda), dodajemy do VIP Facts
                         if env in ORES:
                             self.vip_facts[pos] = (env, None, False)
+                
+                # 2. POBRANIE INFORMACJI O BUDYNKU (bez tego b_team i b_type nie istnieją!)
+                b_id = ct.get_tile_building_id(pos)
+                if b_id is not None:
+                    b_type = ct.get_entity_type(b_id)
+                    b_team = ct.get_team(b_id)
                     
+                    # ---> Zapisywanie bąbli zagrożenia z użyciem funkcji silnika <---
+                    if b_team == enemy_team and b_type in {EntityType.SENTINEL, EntityType.LAUNCHER, EntityType.GUNNER, EntityType.BREACH}:
+                        # Pobieramy kierunek (Launcher ignoruje kierunek, dajemy domyślny)
+                        b_dir = Direction.NORTH
+                        if b_type != EntityType.LAUNCHER:
+                            try:
+                                b_dir = ct.get_direction(b_id)
+                            except Exception:
+                                pass
+                        
+                        try:
+                            # Silnik zwraca gotową listę wszystkich pól w zasięgu ataku!
+                            danger_zone = ct.get_attackable_tiles_from(pos, b_dir, b_type)
+                            for dp in danger_zone:
+                                # Zapisujemy turę wykrycia, by móc to potem wyczyścić
+                                self.temporary_blacklist[dp] = current_round
+                        except Exception:
+                            pass
+
+
                 # 2. PAMIĘĆ DYNAMICZNA i ODCZYT FEROMONÓW (BUDYNKI + MARKERY)
                 b_id = ct.get_tile_building_id(pos)
                 if b_id is not None:
@@ -3563,8 +3587,15 @@ class Player:
             # ==========================================
             target_env = self.memory.get(self.target)
             
-            # BEZPIECZNIK - ŚCIANA
-            if target_env == Environment.WALL:
+            # Określamy czy bot jest w trybie bojowym (żołnierze ignorują strefy zagrożenia)
+            is_combat = self.bot_state in {BotState.HARRAS, BotState.SABOTEUR, BotState.KAMIKAZE}
+
+            # BEZPIECZNIK - ŚCIANA LUB ZAGROŻENIE
+            target_invalid = False
+            if self.target:
+                target_invalid = not self.is_tile_valid(self.target, ignore_temporary=is_combat)
+
+            if target_env == Environment.WALL or target_invalid:
                 self.target = None
                 self.path = []
 
@@ -3644,24 +3675,29 @@ class Player:
                             if not is_hard_obstacle and not out_of_bounds:
                                 self.path = [greedy_dir]
                             else:
-                                # KROK 2: Uderzenie w przeszkodę -> KAŻDY używa A*, żeby ładnie omijać ściany
+                                # KROK 2: Uderzenie w przeszkodę -> KAŻDY używa A*, żeby ładnie omijać ściany i wieżyczki
                                 self.path = self.calculate_astar_path(
                                     ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
-                                    stop_adjacent=is_building 
+                                    stop_adjacent=is_building,
+                                    ignore_temporary=is_combat # Żołnierze omijają tylko ściany, cywile omijają też wieżyczki!
                                 ) or [] 
 
                                 if not self.path:
                                     # A* nie znalazł drogi. Sprawdzamy czy to wina budynków, czy twardego terenu!
                                     terrain_path = self.calculate_astar_path(
                                         ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
-                                        stop_adjacent=is_building, ignore_buildings=True
+                                        stop_adjacent=is_building, ignore_buildings=True,
+                                        ignore_temporary=is_combat
                                     ) or []
 
                                     if not terrain_path:
-                                        # Teren jest fizycznie odcięty przez mury/rudę! (Wrzucamy na Blacklistę)
-                                        self.unreachable_targets[target_pos] = current_round
+                                        # Teren jest fizycznie odcięty przez mury/rudę! (Rejestr Wieczny)
+                                        self.permanent_blacklist.add(target_pos)
+                                    else:
+                                        # Zablokowany przez budynki, z których nie chce zejść wróg (Rejestr Tymczasowy)
+                                        self.temporary_blacklist[target_pos] = current_round
                                     
-                                    # W obu przypadkach (mur czy budynek) chwilowo nie możemy przejść, więc resetujemy cel
+                                    # W obu przypadkach chwilowo nie możemy przejść, więc resetujemy cel
                                     self.target = None
                                     
                                     if self.bot_state in {BotState.BUILD_MINE, BotState.BUILD_BELT}:
