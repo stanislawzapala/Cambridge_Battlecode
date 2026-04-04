@@ -85,7 +85,7 @@ PASSABLE_TYPES_SET = {EntityType.ROAD, EntityType.CONVEYOR, EntityType.ARMOURED_
 # 3. STANY BOTÓW (Maszyna stanów)
 BUILDING_STATES = {BotState.BUILD_MINE, BotState.BUILD_BELT, BotState.BUILD_BUNKER, BotState.FORTIFIER, BotState.SMELTER, BotState.SABOTEUR}
 WANDERING_STATES = {BotState.EXPLORE, BotState.ROAD_LAYER, BotState.KAMIKAZE, BotState.REPAIRMAN, BotState.FORTIFIER, BotState.SMELTER, BotState.HARRAS}
-LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.SMELTER, BotState.FORTIFIER, BotState.REPAIRMAN]
+LATE_STATES = [BotState.HARRAS, BotState.KAMIKAZE, BotState.SMELTER, BotState.FORTIFIER, BotState.REPAIRMAN, BotState.EXPLORE]
 
 # 4. SIEĆ LOGISTYCZNA
 NETWORK = {EntityType.CONVEYOR, EntityType.ARMOURED_CONVEYOR, EntityType.BRIDGE, EntityType.SPLITTER}
@@ -120,7 +120,7 @@ COST_MAPPING = {
 }
 
 # PRODUKCJA PROBEK
-TURNS_TO_SPAWN = {1, 2, 20, 50, 100, 150}
+TURNS_TO_SPAWN = {1, 2, 3, 4, 20, 50, 100, 150}
 
 
 
@@ -1012,7 +1012,7 @@ class Player:
                 self.repairman_prev_hp = ct.get_hp()
 
                 # Przydzielanie ról na podstawie tego, w jakiej fazie gry bot się urodził
-                if current_round <= 2:
+                if current_round <= 3:
                     # Boty początkowe (z tury 1 i 2)
                     self.bot_state = BotState.HARRAS
                     self.target = Position(map_width // 2, map_height // 2)
