@@ -165,7 +165,8 @@ class Player:
         self.spawn_round: int = 0 
         # ---> NOWOŚĆ: Pamięć odciętych stref i stref zagrożenia <---
         self.permanent_blacklist: set[Position] = set()
-        self.temporary_blacklist: dict[Position, int] = {}
+        self.temporary_blacklist: dict[Position, int] = {} # Dla Sentineli (miękkie omijanie)
+        self.deadly_blacklist: dict[Position, int] = {}    # Dla Gunner/Breach/Launcher
         
         # --- WYDOBYCIE ---
         # Złoże które dany bot aktualnie obsługuje (BUILD_MINE / BUILD_BELT)
@@ -211,11 +212,7 @@ class Player:
 
        
 
-    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False, ignore_buildings: bool = False, ignore_temporary: bool = False) -> list[Direction] | None:
-        """
-        Zwraca listę kierunków za pomocą A*. 
-        Uwzględnia permanent_blacklist oraz temporary_blacklist (zależnie od flagi ignore_temporary).
-        """
+    def calculate_astar_path(self, ct: Controller, start: Position, target: Position, w: int, h: int, bot_id: int, my_team: Team, stop_adjacent: bool = False, ignore_buildings: bool = False) -> list[Direction] | None:
         queue = []
         heapq.heappush(queue, (0, 0, start.x, start.y, start))
         
@@ -224,7 +221,6 @@ class Player:
         iterations = 0
         target_node = None
 
-        # Preferencja kierunków
         DIRECTIONS_PREFERENCE = sorted(DIRECTIONS, key=lambda d: start.add(d).distance_squared(target))
 
         while queue:
@@ -237,7 +233,6 @@ class Player:
             
             priority, current_cost, _, _, curr = heapq.heappop(queue)
 
-            # Sprawdzanie celu
             if stop_adjacent and curr.distance_squared(target) <= 2:
                 target_node = curr
                 break
@@ -252,36 +247,36 @@ class Player:
                 if not (0 <= next_pos.x < w and 0 <= next_pos.y < h):
                     continue
                 
-                # 2. NOWOŚĆ: Walidacja przez czarne listy (Permanent i Temporary)
-                if not self.is_tile_valid(next_pos, ignore_temporary=ignore_temporary):
+                # 2. Omijamy TWARDE przeszkody i strefy śmierci (Launcher, Gunner, Breach)
+                if next_pos in self.permanent_blacklist:
+                    continue
+                if self.deadly_blacklist.get(next_pos, -1) >= ct.get_current_round() - 2:
                     continue
 
                 new_cost = current_cost + 1
                 
+                # 3. STREFA SENTINELA (Gorąca lawa - unikaj, ale wejdź jeśli musisz)
+                if self.temporary_blacklist.get(next_pos, -1) >= ct.get_current_round() - 2:
+                    new_cost += 100 
+                
                 if next_pos not in cost_so_far or new_cost < cost_so_far[next_pos]:
-                    # 3. Sprawdzanie terenu (ściany/ruda w pamięci)
                     memory_env = self.memory.get(next_pos, Environment.EMPTY)
                     if memory_env in HARD_OBSTACLES:
                         continue 
                     
-                    # 4. Sprawdzanie budynków
                     if not ignore_buildings:
                         b_info = self.buildings.get(next_pos)
                         if b_info is not None:
                             b_type, b_team, _, _ = b_info
                             if b_type is not None:
-                                # Blokujemy, jeśli to nie jest coś, po czym można chodzić
                                 if b_type not in passable_types and b_type != EntityType.CORE:
                                     continue
-                                # Wrogi rdzeń zawsze blokuje
                                 elif b_type == EntityType.CORE and b_team != my_team:
                                     continue
 
-                    # Obliczanie priorytetu
                     cost_so_far[next_pos] = new_cost
                     heuristic = max(abs(next_pos.x - target.x), abs(next_pos.y - target.y))
                     
-                    # Tie-breaker (prosta linia)
                     dx1, dy1 = next_pos.x - target.x, next_pos.y - target.y
                     dx2, dy2 = start.x - target.x, start.y - target.y
                     cross_product = abs(dx1 * dy2 - dx2 * dy1)
@@ -290,7 +285,6 @@ class Player:
                     heapq.heappush(queue, (priority, new_cost, next_pos.x, next_pos.y, next_pos))
                     came_from[next_pos] = (curr, d)
 
-        # Odtwarzanie ścieżki
         if target_node is None or target_node not in came_from:
             return None 
 
@@ -1060,7 +1054,6 @@ class Player:
                     
                     # ---> Zapisywanie bąbli zagrożenia z użyciem funkcji silnika <---
                     if b_team == enemy_team and b_type in {EntityType.SENTINEL, EntityType.LAUNCHER, EntityType.GUNNER, EntityType.BREACH}:
-                        # Pobieramy kierunek (Launcher ignoruje kierunek, dajemy domyślny)
                         b_dir = Direction.NORTH
                         if b_type != EntityType.LAUNCHER:
                             try:
@@ -1069,11 +1062,13 @@ class Player:
                                 pass
                         
                         try:
-                            # Silnik zwraca gotową listę wszystkich pól w zasięgu ataku!
+                            # Rozdzielamy strefy śmierci od ostrzeżeń!
                             danger_zone = ct.get_attackable_tiles_from(pos, b_dir, b_type)
                             for dp in danger_zone:
-                                # Zapisujemy turę wykrycia, by móc to potem wyczyścić
-                                self.temporary_blacklist[dp] = current_round
+                                if b_type == EntityType.SENTINEL:
+                                    self.temporary_blacklist[dp] = current_round
+                                else:
+                                    self.deadly_blacklist[dp] = current_round
                         except Exception:
                             pass
 
@@ -3277,10 +3272,33 @@ class Player:
             
             elif current_state == BotState.HARRAS:
                 # ==========================================
-                # HARRAS (3-KROKOWA STRATEGIA)
-                # 1. Znajdź Bazę -> 2. Obuduj Bazę -> 3. Zniszcz Sieć
+                # HARRAS (STRATEGIA OBLĘŻENIA BAZY)
+                # 1. Zwiad -> 2. Zniszcz sieć wokół bazy -> 3. Zamurowuj dziury wokół bazy -> 4. Niszcz resztę
                 # ==========================================
                 is_action_taken = False
+
+                # ---> Błyskawiczna weryfikacja wzrokowa celu ze zwiadu! <---
+                if self.target and not self.enemy_core_seen:
+                    marg_x, marg_y = map_width // 6, map_height // 6
+                    rogi = [
+                        Position(marg_x, marg_y), 
+                        Position(map_width - 1 - marg_x, map_height - 1 - marg_y),
+                        Position(map_width - 1 - marg_x, marg_y), 
+                        Position(marg_x, map_height - 1 - marg_y)
+                    ]
+                    is_scout_target = False
+                    if self.enemy_core_center and self.target.x == self.enemy_core_center.x and self.target.y == self.enemy_core_center.y:
+                        is_scout_target = True
+                    for rog in rogi:
+                        if self.target.x == rog.x and self.target.y == rog.y:
+                            is_scout_target = True
+                            break
+                            
+                    if is_scout_target and ct.is_in_vision(self.target):
+                        t_b_id = ct.get_tile_building_id(self.target)
+                        if t_b_id is None or ct.get_entity_type(t_b_id) != EntityType.CORE or ct.get_team(t_b_id) != enemy_team:
+                            self.invalid_enemy_core_guesses.add((self.target.x, self.target.y))
+                            self.target = None
 
                 # --- ATAK W BIEGU (Taranowanie) ---
                 if self.target and my_pos.x == self.target.x and my_pos.y == self.target.y:
@@ -3292,22 +3310,18 @@ class Player:
                             
                             # Po zniszczeniu czyścimy pamięć budynku z pola
                             if ct.get_tile_building_id(my_pos) is None:
-                                self.target = None
+                                if self.enemy_core_seen:
+                                    self.bot_state = BotState.SABOTEUR
+                                else:
+                                    self.target = None # Jesteśmy na zwiadzie - idziemy dalej
                         
                         is_action_taken = True
-                    else:
-                        # Puste pole - odhaczamy z czarnej listy (jeśli to był zwiad)
-                        if not self.enemy_core_seen:
-                            self.invalid_enemy_core_guesses.add((my_pos.x, my_pos.y))
-                            self.target = None
 
                 if not is_action_taken and ct.get_action_cooldown() == 0:
                     
-                    # Weryfikacja celu (odświeżamy cel co 5 tur na wszelki wypadek)
                     target_invalid = False
                     if self.target and self.enemy_core_seen:
                         t_type, t_team, _, _ = self.buildings.get(self.target, (None, None, None, -1))
-                        # Jeśli celem miał być kabel, a go już tam nie ma - cel jest nieważny
                         if t_team != enemy_team:
                             target_invalid = True
 
@@ -3323,11 +3337,11 @@ class Player:
                         if not self.enemy_core_seen:
                             punkty_zwiadu = []
                             
-                            # Główna estymacja z Sekcji 1.5
-                            if self.enemy_core_center:
-                                punkty_zwiadu.append(self.enemy_core_center)
+                            # Omijamy strefy śmierci i stałe blokady
+                            if self.enemy_core_center and self.enemy_core_center not in self.permanent_blacklist:
+                                if self.deadly_blacklist.get(self.enemy_core_center, -1) < current_round - 2:
+                                    punkty_zwiadu.append(self.enemy_core_center)
                                 
-                            # Rogi mapy
                             marg_x, marg_y = map_width // 6, map_height // 6
                             rogi = [
                                 Position(marg_x, marg_y), 
@@ -3336,13 +3350,15 @@ class Player:
                                 Position(marg_x, map_height - 1 - marg_y)
                             ]
                             
-                            # Filtrujemy odwiedzone/puste rogi
                             for rog in rogi:
-                                if (rog.x, rog.y) not in self.invalid_enemy_core_guesses:
-                                    punkty_zwiadu.append(rog)
+                                if (rog.x, rog.y) not in self.invalid_enemy_core_guesses and rog not in self.permanent_blacklist:
+                                    if self.deadly_blacklist.get(rog, -1) < current_round - 2:
+                                        punkty_zwiadu.append(rog)
 
                             if punkty_zwiadu:
                                 nowy_cel = punkty_zwiadu[0]
+                            else:
+                                self.invalid_enemy_core_guesses.clear()
 
                         # =========================================================
                         # BAZA ZNALEZIONA! (enemy_core_seen == True)
@@ -3350,57 +3366,69 @@ class Player:
                         else:
                             cx, cy = self.enemy_core_center.x, self.enemy_core_center.y
                             
-                            # =========================================================
-                            # KROK 2: OBUDOWUJEMY BAZĘ
-                            # =========================================================
-                            puste_przy_bazie = None
-                            
+                            perimeter_tiles = []
                             for dx in range(-2, 3):
                                 for dy in range(-2, 3):
-                                    if abs(dx) <= 1 and abs(dy) <= 1: continue # Środek bazy pomijamy
-                                    
+                                    if abs(dx) <= 1 and abs(dy) <= 1: continue 
                                     adj = Position(cx + dx, cy + dy)
-                                    if not (0 <= adj.x < map_width and 0 <= adj.y < map_height): continue
+                                    if 0 <= adj.x < map_width and 0 <= adj.y < map_height:
+                                        perimeter_tiles.append(adj)
+
+                            # =========================================================
+                            # KROK 2: NISZCZYMY SIEĆ WROGA NA OBWODZIE BAZY
+                            # =========================================================
+                            wrogi_cel = None
+                            for adj in perimeter_tiles:
+                                # IGNORUJEMY STREFY ŚMIERCI
+                                if self.deadly_blacklist.get(adj, -1) >= current_round - 2:
+                                    continue
                                     
-                                    # Szukamy pustych pól lub naszych dróg/markerów
+                                b_info = self.buildings.get(adj)
+                                if b_info and b_info[1] == enemy_team and (b_info[0] in NETWORK or b_info[0] == EntityType.ROAD):
+                                    if wrogi_cel is None or my_pos.distance_squared(adj) < my_pos.distance_squared(wrogi_cel):
+                                        wrogi_cel = adj
+                                        
+                            if wrogi_cel:
+                                nowy_cel = wrogi_cel
+                                
+                            # =========================================================
+                            # KROK 3: OBUDOWUJEMY PUSTE POLA BARIERAMI
+                            # =========================================================
+                            if not nowy_cel:
+                                puste_przy_bazie = None
+                                for adj in perimeter_tiles:
+                                    # IGNORUJEMY STREFY ŚMIERCI
+                                    if self.deadly_blacklist.get(adj, -1) >= current_round - 2:
+                                        continue
+                                        
                                     if self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
                                         b_info = self.buildings.get(adj)
                                         is_removable = not b_info or b_info[0] in {None, EntityType.MARKER} or (b_info[0] == EntityType.ROAD and b_info[1] == my_team)
                                         
                                         if is_removable:
-                                            # Bierzemy to pole, które jest najbliżej bota
                                             if puste_przy_bazie is None or my_pos.distance_squared(adj) < my_pos.distance_squared(puste_przy_bazie):
                                                 puste_przy_bazie = adj
                                                 
-                            if puste_przy_bazie:
-                                # Znaleziono lukę -> Idziemy murować!
-                                self.bot_state = BotState.SABOTEUR
-                                self.target = puste_przy_bazie
-                                self.sabotage_dir = None
-                                self.path = []
-                                zmieniono_stan = True
+                                if puste_przy_bazie:
+                                    self.bot_state = BotState.SABOTEUR
+                                    self.target = puste_przy_bazie
+                                    self.sabotage_dir = None
+                                    self.path = []
+                                    zmieniono_stan = True
                                 
                             # =========================================================
-                            # KROK 3: NISZCZYMY KABLE I MOSTY WROGA (Bo nie ma już luk)
+                            # KROK 4: NISZCZYMY RESZTĘ SIECI NA MAPIE (Baza oblężona)
                             # =========================================================
-                            if not zmieniono_stan:
+                            if not nowy_cel and not zmieniono_stan:
                                 best_score = float('inf')
                                 for pos, (b_type, b_team, _, _) in self.buildings.items():
+                                    # IGNORUJEMY STREFY ŚMIERCI
+                                    if self.deadly_blacklist.get(pos, -1) >= current_round - 2:
+                                        continue
+                                        
                                     if b_team == enemy_team and (b_type in NETWORK or b_type == EntityType.ROAD):
-                                        # Wyliczamy koszt: faworyzujemy kable blisko naszej bazy i blisko bota
                                         dist_to_bot = my_pos.distance_squared(pos)
-                                        
                                         score = dist_to_bot
-                                        
-                                        # Premia za kable z surowcami
-                                        if ct.is_in_vision(pos):
-                                            b_id_target = ct.get_tile_building_id(pos)
-                                            if b_id_target is not None:
-                                                try:
-                                                    if ct.get_stored_resource(b_id_target) is not None:
-                                                        score -= 2000
-                                                except Exception: pass
-                                        
                                         if score < best_score:
                                             best_score = score
                                             nowy_cel = pos
@@ -3412,10 +3440,9 @@ class Player:
                             self.target = nowy_cel
                             self.path = []
 
-
             elif current_state == BotState.SABOTEUR:
                 # ==========================================
-                # SABOTEUR: Murowanie ślepych kabli oraz bazy wroga.
+                # SABOTEUR: Inżynier bojowy. Stawia wieże i mury na wyczyszczonym polu.
                 # ==========================================
                 if not self.target:
                     self.bot_state = BotState.HARRAS
@@ -3426,7 +3453,6 @@ class Player:
                 elif my_pos.distance_squared(self.target) <= 2 and ct.get_action_cooldown() == 0:
                     tp = self.target
 
-                    # Ochrona przed mgłą wojny i fałszywym celem w Saboteur
                     if ct.is_in_vision(tp):
                         rzeczywisty_teren = ct.get_tile_env(tp)
                         if rzeczywisty_teren in HARD_OBSTACLES:
@@ -3443,49 +3469,41 @@ class Player:
                             if ct.can_destroy(tp):
                                 ct.destroy(tp)
                         elif tp_type != EntityType.MARKER and tp_team == enemy_team:
-                            # Sabotażysta nie umie uderzać w to co już stoi. Wracamy do Harras, żeby to zniszczyć!
                             self.bot_state = BotState.HARRAS
                             self.target = tp
                             self.path = []
                         elif tp_type != EntityType.MARKER and tp_team == my_team:
-                            # To już jest nasz budynek (np. Bariera), przerywamy
                             self.bot_state = BotState.HARRAS
                             self.target = None
                             self.path = []
                             
-                    # Jeśli PUSTE LUB MARKER:
+                    # Jeśli PUSTE LUB MARKER -> BUDUJEMY!
                     if tp_type is None or tp_type == EntityType.MARKER:
                         
-                        # --- JEŚLI MUROWALIŚMY BAZĘ ---
-                        if self.enemy_core_seen and self.target.x == self.enemy_core_cx and self.target.y == self.enemy_core_cy:
-                            # Bot z SABOTEUR szuka luki do zamurowania wokół wskazanej mu Bazy!
-                            puste_przy_bazie = None
-                            for dx in range(-2, 3):
-                                for dy in range(-2, 3):
-                                    if abs(dx) <= 1 and abs(dy) <= 1: continue
-                                    adj = Position(self.enemy_core_cx + dx, self.enemy_core_cy + dy)
-                                    if not (0 <= adj.x < map_width and 0 <= adj.y < map_height): continue
-                                    
-                                    if self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
-                                        b_info = self.buildings.get(adj)
-                                        is_removable = not b_info or b_info[0] in {None, EntityType.MARKER} or (b_info[0] == EntityType.ROAD and b_info[1] == my_team)
-                                        
-                                        if is_removable and my_pos.distance_squared(adj) <= 2:
-                                            puste_przy_bazie = adj
-                                            break
-                            
-                            if puste_przy_bazie:
-                                if self._can_afford_build(ct, 'barrier') and ct.can_build_barrier(puste_przy_bazie):
-                                    ct.build_barrier(puste_przy_bazie)
-                                    # Szukamy dalej
-                                    self.target = Position(self.enemy_core_cx, self.enemy_core_cy) 
-                                    self.path = []
-                            else:
-                                # Wszystko zabudowane, koniec murowania bazy
+                        is_on_perimeter = False
+                        facing_core = None
+                        
+                        if self.enemy_core_seen and self.enemy_core_center:
+                            dx = abs(tp.x - self.enemy_core_center.x)
+                            dy = abs(tp.y - self.enemy_core_center.y)
+                            if max(dx, dy) == 2: 
+                                is_on_perimeter = True
+                                facing_core = self._get_8way_dir_to(tp, self.enemy_core_center)
+
+                        # --- TAKTYKA: OBLĘŻENIE BAZY ---
+                        if is_on_perimeter and facing_core is not None:
+                            if self._can_afford_build(ct, 'gunner') and ct.can_build_gunner(tp, facing_core):
+                                ct.build_gunner(tp, facing_core)
                                 self.bot_state = BotState.HARRAS
                                 self.target = None
-                        
-                        # --- JEŚLI MUROWALIŚMY ŚLEPE KABLE ---
+                                self.path = []
+                            elif self._can_afford_build(ct, 'barrier') and ct.can_build_barrier(tp):
+                                ct.build_barrier(tp)
+                                self.bot_state = BotState.HARRAS
+                                self.target = None
+                                self.path = []
+                                
+                        # --- TAKTYKA: ZWYKŁY SABOTAŻ KABLI (Z dala od bazy) ---
                         else:
                             pointing_enemy_dir = None
                             for d in ORTHOGONAL_DIRECTIONS:
@@ -3524,19 +3542,17 @@ class Player:
 
 
 
-
             # ==========================================
             # 3. RUCH (NOGI) - Wykonuje się tylko, gdy mamy gdzie iść
             # ==========================================
             target_env = self.memory.get(self.target)
             
-            # Określamy czy bot jest w trybie bojowym (żołnierze ignorują strefy zagrożenia)
-            is_combat = self.bot_state in {BotState.HARRAS, BotState.SABOTEUR, BotState.KAMIKAZE}
-
-            # BEZPIECZNIK - ŚCIANA LUB ZAGROŻENIE
+            # BEZPIECZNIK - ŚCIANA LUB STREFA ŚMIERCI
             target_invalid = False
             if self.target:
-                target_invalid = not self.is_tile_valid(self.target, ignore_temporary=is_combat)
+                # Odrzucamy cel, jeśli zablokował się fizycznie albo leży w strefie Gunnera/Launchera
+                if self.target in self.permanent_blacklist or self.deadly_blacklist.get(self.target, -1) >= current_round - 2:
+                    target_invalid = True
 
             if target_env == Environment.WALL or target_invalid:
                 self.target = None
@@ -3554,35 +3570,27 @@ class Player:
                     pass
 
             # BEZPIECZNIK: jeśli cel nie zmienił się przez 60 tur, resetuj go.
-            # Działa tylko w stanach nie-budujących.
             if target_pos is not None and self.bot_state in WANDERING_STATES:
                 if self.target_last != target_pos:
-                    # Nowy cel — zapamiętaj turę ustawienia
                     self.target_last = target_pos
                     self.target_since = current_round
                 elif current_round - self.target_since >= 60:
-                    # Ten sam cel przez 60 tur — reset
                     self.target = None
                     self.path = []
                     self.target_last = None
                     self.target_since = current_round
                     target_pos = None
 
-            # Czy bot idzie budować? (zatrzymuje się krok przed celem, nie wchodzi na nie)
             is_building = (self.bot_state in BUILDING_STATES)
 
-            # ---> NOWOŚĆ: Zdejmujemy hamulec (pozwalamy wejść NA POLE), jeśli chcemy staranować wroga! <---
+            # Zdejmujemy hamulec (pozwalamy wejść NA POLE), jeśli chcemy staranować wroga!
             if is_building and target_pos and ct.is_in_vision(target_pos):
                 t_b_id = ct.get_tile_building_id(target_pos)
                 if t_b_id is not None and ct.get_team(t_b_id) == enemy_team and ct.get_entity_type(t_b_id) != EntityType.MARKER:
                     is_building = False
-
             
             if target_pos:
-                # =======================================================
-                # UNIWERSALNY ODBLOKOWYWACZ (Ewakuacja z placu budowy)
-                # Jeśli bot ma zbudować coś na polu, na którym właśnie stoi - musi zrobić krok w bok!
-                # =======================================================
+                # UNIWERSALNY ODBLOKOWYWACZ
                 if is_building and my_pos == target_pos:
                     for try_dir in DIRECTIONS:
                         if ct.can_move(try_dir):
@@ -3590,6 +3598,7 @@ class Player:
                             future_pos = my_pos.add(try_dir)
                             self.path = []
                             break
+                            
                 # HAMULEC: Zatrzymujemy się krok przed celem TYLKO, gdy idziemy budować.
                 if my_pos != target_pos and (not is_building or my_pos.distance_squared(target_pos) > 2):
                     
@@ -3611,47 +3620,32 @@ class Player:
                                 can_walk_on_enemy = self.can_walk_on_building(b_id, my_team, ct) # type: ignore
                                 is_allied_core = (b_type == EntityType.CORE and ct.get_team(b_id) == my_team)
 
-                                # Twarda przeszkoda to: Ściana/Ruda ALBO budynek, który NIE JEST markerem i po którym nie da się chodzić
                                 is_hard_obstacle = (memory_env in HARD_OBSTACLES or (env in HARD_OBSTACLES and memory_env is None) or 
                                                 (b_id is not None and b_type not in passable_types and not can_walk_on_enemy and not is_allied_core))
                             
                             if not is_hard_obstacle and not out_of_bounds:
                                 self.path = [greedy_dir]
                             else:
-                                # KROK 2: Uderzenie w przeszkodę -> KAŻDY używa A*, żeby ładnie omijać ściany i wieżyczki
+                                # KROK 2: Uderzenie w przeszkodę -> A* omija strefy zagrożenia
                                 self.path = self.calculate_astar_path(
                                     ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
-                                    stop_adjacent=is_building,
-                                    ignore_temporary=is_combat # Żołnierze omijają tylko ściany, cywile omijają też wieżyczki!
+                                    stop_adjacent=is_building
                                 ) or [] 
 
                                 if not self.path:
                                     # A* nie znalazł drogi. Sprawdzamy czy to wina budynków, czy twardego terenu!
                                     terrain_path = self.calculate_astar_path(
                                         ct, my_pos, target_pos, map_width, map_height, my_id, my_team, 
-                                        stop_adjacent=is_building, ignore_buildings=True,
-                                        ignore_temporary=is_combat
+                                        stop_adjacent=is_building, ignore_buildings=True
                                     ) or []
 
                                     if not terrain_path:
-                                        # Teren jest fizycznie odcięty przez mury/rudę! (Rejestr Wieczny)
                                         self.permanent_blacklist.add(target_pos)
                                     else:
-                                        # Zablokowany przez budynki, z których nie chce zejść wróg (Rejestr Tymczasowy)
                                         self.temporary_blacklist[target_pos] = current_round
                                     
-                                    # W obu przypadkach chwilowo nie możemy przejść, więc resetujemy cel
                                     self.target = None
-                                    
-                                    if self.bot_state in {BotState.BUILD_MINE, BotState.BUILD_BELT}:
-                                        self.bot_state = BotState.EXPLORE
-                                        self.assigned_ore = None
-                                        self.pending_splitter = None
-                                    elif self.bot_state == BotState.SABOTEUR:
-                                        self.bot_state = BotState.HARRAS
-                                        self.assigned_ore = None
-                                        self.pending_splitter = None
-                                        
+                                    self.path = []
                                     break # Kończymy turę ruchu
                     
                         # FAZA WYKONANIA
@@ -3664,7 +3658,7 @@ class Player:
                                 ct.move(next_dir)
                                 future_pos = next_pos
                                 self.path.pop(0) 
-                                break # Ruch wykonany, wyskakujemy z pętli range(2)
+                                break # Ruch wykonany
 
                             # 2. Nie możemy iść optymalnie bez budowania? Próbujemy zbudować drogę
                             elif ct.can_build_road(next_pos):
@@ -3674,36 +3668,30 @@ class Player:
                                         ct.move(next_dir)
                                         future_pos = next_pos
                                         self.path.pop(0)
-                                break # Zbudowaliśmy drogę (lub czekamy na cooldown), koniec akcji w tej turze
+                                break 
 
-                            # 3. Nie możemy iść optymalnie i nie możemy zbudować drogi - sprawdzamy, co nas blokuje
+                            # 3. Nie możemy iść optymalnie i nie możemy zbudować drogi
                             else:
-                                # PYTAMY WPROST: Czy na tym polu fizycznie stoi jakiś bot?
                                 if not (0 <= next_pos.x < map_width and 0 <= next_pos.y < map_height):
                                     self.path = []
                                     break
                                 blocking_bot_id = ct.get_tile_builder_bot_id(next_pos)
                                 
                                 if blocking_bot_id is not None:
-                                    # Blokuje nas ruchoma jednostka (Miękka przeszkoda)
-                                    # Odpalamy unik (Reaktywne omijanie)
+                                    # Unik
                                     alt_directions = sorted(DIRECTIONS, key=lambda d: my_pos.add(d).distance_squared(target_pos))
-                                    
                                     for alt_dir in alt_directions:
                                         if alt_dir != next_dir and ct.can_move(alt_dir):
                                             ct.move(alt_dir)
                                             future_pos = my_pos.add(alt_dir)
-                                            self.path = [] # Reset trasy, po uniku liczymy A* od nowa
+                                            self.path = [] 
                                             break
                                     else:
-                                        self.path = [] # Jeśli nie udało się znaleźć żadnego wolnego pola do uniku, resetujemy trasę, żeby w następnej turze przeliczyć A* z aktualną sytuacją na mapie        
-                                    
-                                    break # Kończymy turę ruchu
+                                        self.path = [] 
+                                    break
                                 else:
-                                    # Blokuje nas twarda przeszkoda, której nie wykryliśmy (może to być np. nowo zbudowany budynek, którego jeszcze nie ma w pamięci)
-                                    # Resetujemy trasę, żeby w następnej turze przeliczyć A* z aktualną sytuacją na mapie
                                     self.path = []
-                                    break # Kończymy turę ruchu
+                                    break
 
 
             # ==========================================
