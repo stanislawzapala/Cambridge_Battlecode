@@ -530,7 +530,7 @@ class Player:
         
         return Position(calculated_core_cx, calculated_core_cy)
     
-    def _estimate_enemy_core_center(self, my_pos: Position):
+    def _estimate_enemy_core_center(self, my_pos: Position, map_width: int, map_height: int):
         """
         Inteligentnie estymuje środek bazy 3x3 wroga nawet na podstawie widocznych kafelków.
         Gdy jest ich mniej niż 5 estymuje o 1 dalej od bota niż wynika ze średniej z kafelków.
@@ -560,8 +560,9 @@ class Player:
         dx = 1 if avg_x > my_pos.x else -1 if avg_x < my_pos.x else 0
         dy = 1 if avg_y > my_pos.y else -1 if avg_y < my_pos.y else 0
         
-        est_cx = int(round(avg_x)) + dx
-        est_cy = int(round(avg_y)) + dy
+        # Zabezpieczenie przed wyjściem poza mapę
+        est_cx = max(0, min(map_width - 1, int(round(avg_x)) + dx))
+        est_cy = max(0, min(map_height - 1, int(round(avg_y)) + dy))
         
         self.enemy_core_cx = est_cx
         self.enemy_core_cy = est_cy
@@ -1198,7 +1199,7 @@ class Player:
             # WROGA BAZA
             # 1. Opcja A: Widzimy kafelki bazy na żywo
             if self.enemy_core_tiles and not self.enemy_core_seen:
-                self._estimate_enemy_core_center(my_pos)
+                self._estimate_enemy_core_center(my_pos, map_width, map_height)
                 if self.enemy_core_center:
                     self.enemy_core_cx = self.enemy_core_center.x
                     self.enemy_core_cy = self.enemy_core_center.y
@@ -3319,11 +3320,20 @@ class Player:
 
                 if not is_action_taken and ct.get_action_cooldown() == 0:
                     
+                    # WERYFIKACJA OBECNEGO CELU - CZY A* GO NIE ODRZUCIŁO?
                     target_invalid = False
-                    if self.target and self.enemy_core_seen:
-                        t_type, t_team, _, _ = self.buildings.get(self.target, (None, None, None, -1))
-                        if t_team != enemy_team:
+                    if self.target:
+                        is_blocked = (
+                            self.target in self.permanent_blacklist or
+                            self.deadly_blacklist.get(self.target, -1) >= current_round - 2 or
+                            self.temporary_blacklist.get(self.target, -1) >= current_round - 2
+                        )
+                        if is_blocked:
                             target_invalid = True
+                        elif self.enemy_core_seen:
+                            t_type, t_team, _, _ = self.buildings.get(self.target, (None, None, None, -1))
+                            if t_team != enemy_team:
+                                target_invalid = True
 
                     early_turn = (current_round <= 100) and (current_round % 5 == 0)
                     
@@ -3339,7 +3349,7 @@ class Player:
                             
                             # Omijamy strefy śmierci i stałe blokady
                             if self.enemy_core_center and self.enemy_core_center not in self.permanent_blacklist:
-                                if self.deadly_blacklist.get(self.enemy_core_center, -1) < current_round - 2:
+                                if self.deadly_blacklist.get(self.enemy_core_center, -1) < current_round - 2 and self.temporary_blacklist.get(self.enemy_core_center, -1) < current_round - 2:
                                     punkty_zwiadu.append(self.enemy_core_center)
                                 
                             marg_x, marg_y = map_width // 6, map_height // 6
@@ -3352,7 +3362,7 @@ class Player:
                             
                             for rog in rogi:
                                 if (rog.x, rog.y) not in self.invalid_enemy_core_guesses and rog not in self.permanent_blacklist:
-                                    if self.deadly_blacklist.get(rog, -1) < current_round - 2:
+                                    if self.deadly_blacklist.get(rog, -1) < current_round - 2 and self.temporary_blacklist.get(rog, -1) < current_round - 2:
                                         punkty_zwiadu.append(rog)
 
                             if punkty_zwiadu:
@@ -3379,8 +3389,8 @@ class Player:
                             # =========================================================
                             wrogi_cel = None
                             for adj in perimeter_tiles:
-                                # IGNORUJEMY STREFY ŚMIERCI
-                                if self.deadly_blacklist.get(adj, -1) >= current_round - 2:
+                                # OMIJAMY ZABLOKOWANE POLA!
+                                if adj in self.permanent_blacklist or self.deadly_blacklist.get(adj, -1) >= current_round - 2 or self.temporary_blacklist.get(adj, -1) >= current_round - 2:
                                     continue
                                     
                                 b_info = self.buildings.get(adj)
@@ -3397,8 +3407,8 @@ class Player:
                             if not nowy_cel:
                                 puste_przy_bazie = None
                                 for adj in perimeter_tiles:
-                                    # IGNORUJEMY STREFY ŚMIERCI
-                                    if self.deadly_blacklist.get(adj, -1) >= current_round - 2:
+                                    # OMIJAMY ZABLOKOWANE POLA!
+                                    if adj in self.permanent_blacklist or self.deadly_blacklist.get(adj, -1) >= current_round - 2 or self.temporary_blacklist.get(adj, -1) >= current_round - 2:
                                         continue
                                         
                                     if self.memory.get(adj, Environment.EMPTY) not in HARD_OBSTACLES:
@@ -3422,8 +3432,8 @@ class Player:
                             if not nowy_cel and not zmieniono_stan:
                                 best_score = float('inf')
                                 for pos, (b_type, b_team, _, _) in self.buildings.items():
-                                    # IGNORUJEMY STREFY ŚMIERCI
-                                    if self.deadly_blacklist.get(pos, -1) >= current_round - 2:
+                                    # OMIJAMY ZABLOKOWANE POLA!
+                                    if pos in self.permanent_blacklist or self.deadly_blacklist.get(pos, -1) >= current_round - 2 or self.temporary_blacklist.get(pos, -1) >= current_round - 2:
                                         continue
                                         
                                     if b_team == enemy_team and (b_type in NETWORK or b_type == EntityType.ROAD):
@@ -3439,6 +3449,8 @@ class Player:
                         if nowy_cel and not zmieniono_stan:
                             self.target = nowy_cel
                             self.path = []
+
+                            
 
             elif current_state == BotState.SABOTEUR:
                 # ==========================================
